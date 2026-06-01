@@ -82,7 +82,7 @@ a2aDemo/
 
 agents/weather/agent.py
 
-```json
+```python
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
 from .weather_tool import get_weather
@@ -106,7 +106,7 @@ root_agent = Agent(
 # 🔧 WEATHER TOOL
 
 agents/weather/weather_tool.py
-
+```python
 def get_weather(city: str):
     data = {
         "bangalore": "26°C cloudy",
@@ -114,14 +114,14 @@ def get_weather(city: str):
         "delhi": "35°C sunny"
     }
     return data.get(city.lower(), f"No data for {city}")
-
+```
 ---
 
 # 📡 AGENT CARD (DISCOVERY LAYER)
 
 a2a/agent_card.py
 
-```json
+```python
 AGENT_CARD = {
     "name": "weather_agent",
     "description": "Weather assistant using ADK",
@@ -141,7 +141,7 @@ AGENT_CARD = {
 
 a2a/runner.py
 
-```json
+```python
 import uuid
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -192,7 +192,7 @@ async def run_agent(user_message: str):
 
 a2a/server.py
 
-```json
+```python
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
