@@ -24,6 +24,7 @@ A2A → Agents
 
 # 🔁 HOW A2A WORKS
 
+```text
 Client (Agent/UI/Postman)
         |
         | JSON-RPC request
@@ -41,11 +42,11 @@ ADK Agent (Brain)
         | uses tools
         v
 Response → back to client
-
+```
 ---
 
 # 📁 PROJECT STRUCTURE
-
+```text
 a2aDemo/
 ├── .env
 ├── requirements.txt
@@ -63,7 +64,7 @@ a2aDemo/
 │       └── weather_tool.py
 │
 └── README.md
-
+```
 ---
 
 # ⚙️ TECHNOLOGY STACK
@@ -81,6 +82,7 @@ a2aDemo/
 
 agents/weather/agent.py
 
+```json
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
 from .weather_tool import get_weather
@@ -98,7 +100,7 @@ root_agent = Agent(
     instruction="Answer weather questions using tools",
     tools=[get_weather]
 )
-
+```
 ---
 
 # 🔧 WEATHER TOOL
@@ -119,6 +121,7 @@ def get_weather(city: str):
 
 a2a/agent_card.py
 
+```json
 AGENT_CARD = {
     "name": "weather_agent",
     "description": "Weather assistant using ADK",
@@ -131,13 +134,14 @@ AGENT_CARD = {
         }
     ]
 }
-
+```
 ---
 
 # ⚙️ RUNNER (ADK BRIDGE)
 
 a2a/runner.py
 
+```json
 import uuid
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -181,13 +185,14 @@ async def run_agent(user_message: str):
             final_response = event.content.parts[0].text
 
     return final_response
-
+```
 ---
 
 # 🌐 A2A SERVER (FASTAPI)
 
 a2a/server.py
 
+```json
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
@@ -244,7 +249,7 @@ async def a2a_endpoint(body: A2ARequest):
             }
         }
     }
-
+```
 ---
 
 # 🔑 ENV FILE
@@ -275,6 +280,7 @@ POST /a2a
 
 # 🧪 SAMPLE REQUEST
 
+```json
 {
   "jsonrpc": "2.0",
   "id": "1",
@@ -291,11 +297,11 @@ POST /a2a
     }
   }
 }
-
+```
 ---
 
 # 🔥 SAMPLE RESPONSE
-
+```json
 {
   "jsonrpc": "2.0",
   "id": "1",
@@ -312,7 +318,7 @@ POST /a2a
     }
   }
 }
-
+```
 ---
 
 # 🚀 WHY A2A IS IMPORTANT
