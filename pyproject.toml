@@ -1,7 +1,14 @@
 [project]
 name = "a2ademo"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "A2A (Agent-to-Agent) protocol demo using Google ADK"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn==0.32.1",
+    "google-adk==1.0.0",
+    "litellm==1.55.0",
+    "python-dotenv==1.0.1",
+    "pydantic==2.10.3",
+]
