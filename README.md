@@ -152,17 +152,19 @@ OPENAI_API_KEY=sk-your-key-here
 a2aDemo/
 │
 ├── main.py                ← Starts the A2A server on port 8000
-├── client_demo.py         ← CLI client — sends A2A requests from terminal
+├── client_demo.py         ← CLI client — discovers agent card, matches skills, sends requests
 ├── ui.py                  ← Streamlit chat UI with live request trace
 │
 ├── a2a/                   ← A2A protocol layer (HTTP-facing)
-│   ├── agent_card.py      ← Agent's "business card" — name, skills, capabilities
+│   ├── agent_card.py      ← Agent's "business card" — name, skills, tags, capabilities
+│   ├── discovery.py       ← Reads agent card, matches query to skill, identifies routing
 │   ├── server.py          ← FastAPI server — receives and validates HTTP requests
-│   └── runner.py          ← Bridge — passes messages from HTTP into ADK
+│   ├── runner.py          ← Pure ADK execution — creates session, runs agent, returns text
+│   └── tracer.py          ← Wraps runner with live trace steps for the Streamlit UI
 │
 └── agents/                ← The actual AI agents
     ├── orchestrator/
-    │   └── agent.py       ← Reads intent, routes to the right specialist
+    │   └── agent.py       ← Receives message, delegates to the right specialist via AgentTool
     ├── weather/
     │   ├── agent.py       ← Weather LLM agent
     │   └── weather_tool.py   ← Returns weather data for a city
@@ -348,7 +350,7 @@ async def agent_card():
 
 ### Option A — Streamlit UI (recommended)
 
-The UI includes a chat window and a **live request trace panel** that shows each step as it happens — which agent received the request, what intent was detected, which tool was called, and the final response.
+The UI includes a chat window and an optional **live request trace panel**. Use the **"Show request trace"** checkbox in the sidebar to switch between modes.
 
 **No need to start the server separately. Just run:**
 
@@ -358,28 +360,34 @@ streamlit run ui.py
 
 Opens at **http://localhost:8501**
 
+**Trace ON** (default) — two-column layout, shows each step live:
+
 ```
 ┌──────────────────────┬──────────────────────────────────┐
 │  Chat                │  Live Request Flow               │
 │                      │                                  │
-│  You: weather in     │  Step 1  A2A Server received     │
-│       Bangalore      │          { "method": "message... │
+│  You: weather in     │  Step 1  Agent Card read         │
+│       Bangalore      │          Skills: Weather, Stock  │
 │                      │                                  │
-│  Agent: 26°C,        │  Step 2  Orchestrator received   │
-│  Cloudy in           │          Reading: "weather in..  │
+│  Agent: 26°C,        │  Step 2  Skill matched: Weather  │
+│  Cloudy in           │          Tag: "weather"          │
 │  Bangalore...        │                                  │
-│                      │  Step 3  Intent: WEATHER         │
-│  > type here...      │          Routing to weather_agent│
+│                      │  Step 3  A2A Request sent        │
+│  > type here...      │          POST /a2a               │
 │                      │                                  │
-│                      │  Step 4  Tool called:            │
+│                      │  Step 4  Orchestrator thinking   │
+│                      │                                  │
+│                      │  Step 5  Tool called:            │
 │                      │          get_weather("bangalore")│
 │                      │                                  │
-│                      │  Step 5  Tool response           │
+│                      │  Step 6  Tool response           │
 │                      │          { temp: 26°C, ... }     │
 │                      │                                  │
-│                      │  Step 6  A2A Response sent back  │
+│                      │  Step 7  A2A Response returned   │
 └──────────────────────┴──────────────────────────────────┘
 ```
+
+**Trace OFF** — single-column chat only, calls `run_agent()` directly with no trace overhead. Faster, cleaner.
 
 Try these queries in the chat:
 - `weather in Bangalore`

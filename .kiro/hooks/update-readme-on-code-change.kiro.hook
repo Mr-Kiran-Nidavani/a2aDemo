@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Update README on Code Change",
+  "description": "After editing any Python file, check if the README needs to be updated to reflect the changes",
+  "version": "1",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A Python file was just edited. Check if the change affects anything documented in README.md — project structure, how requests flow, code snippets, endpoints, or how to run. If yes, update the relevant section(s) in README.md to match. Keep it concise and accurate. If nothing in the README needs to change, do nothing."
+  }
+}

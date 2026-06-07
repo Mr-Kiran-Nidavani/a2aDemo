@@ -18,17 +18,21 @@ AGENT_CARD = {
             "id": "weather_lookup",
             "name": "Weather Lookup",
             "description": "Current weather conditions for a city",
-            "tags": ["weather", "temperature", "city", "climate"],
+            "tags": ["weather", "temperature", "city", "climate", "rain",
+                     "sunny", "cloudy", "humid", "wind", "forecast", "hot", "cold"],
             "examples": [
                 "What is the weather in Bangalore?",
-                "How is the weather in Mumbai?"
+                "How is the weather in Mumbai?",
+                "Is it raining in Delhi?"
             ]
         },
         {
             "id": "stock_analysis",
             "name": "Stock Analysis",
             "description": "Current stock price with a 3-line buy/hold/avoid verdict",
-            "tags": ["stock", "price", "market", "investment"],
+            "tags": ["stock", "share", "price", "market", "invest", "buy", "sell",
+                     "aapl", "tsla", "nvda", "googl", "msft", "amzn", "meta",
+                     "nflx", "reliance", "tcs", "infy"],
             "examples": [
                 "Give me a quick analysis of AAPL",
                 "Should I buy TSLA?",

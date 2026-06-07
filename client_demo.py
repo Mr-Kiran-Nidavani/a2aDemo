@@ -1,26 +1,26 @@
 """
-A2A Protocol Client Demo — Pattern 2 (Orchestrator)
+A2A Protocol Client Demo — Orchestrator Pattern
 
-One server. Client sends any request to /a2a.
-The orchestrator routes internally to the right agent.
+Demonstrates true A2A flow:
+  1. Client fetches agent card  (discovery)
+  2. Matches query against card skills  (capability check)
+  3. Sends message only if a skill matches
+  4. Prints the A2A response
 
 Usage:
     python client_demo.py
+    (requires server running: python main.py)
 """
 import asyncio
 import httpx
 import json
 
+from a2a.discovery import fetch_card, match_skill, skill_to_agent
+
 SERVER = "http://localhost:8000"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-async def discover():
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{SERVER}/.well-known/agent.json")
-        return r.json()
-
 
 async def send(req_id: str, text: str) -> dict:
     body = {
@@ -39,83 +39,74 @@ async def send(req_id: str, text: str) -> dict:
         return r.json()
 
 
-def show(label: str, query: str, result: dict):
-    print(f"\n  [{label}]")
-    print(f"  User  : {query}")
+def show(query: str, matched_skill: dict | None, result: dict):
+    skill_name = matched_skill["name"] if matched_skill else "Unknown — LLM decides"
+    agent_name = skill_to_agent(matched_skill)
+    print(f"\n  Query         : {query}")
+    print(f"  Skill matched : {skill_name}")
+    print(f"  Routes to     : {agent_name}")
     if "result" in result:
         answer = result["result"]["message"]["parts"][0]["text"]
-        print(f"  Agent : {answer}")
+        print(f"  Answer        : {answer}")
     else:
-        print(f"  Error : {result.get('error', 'unknown')}")
-    print()
+        print(f"  Error         : {result.get('error', 'unknown')}")
 
 
-# ── Demo ──────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    print("\n" + "=" * 55)
-    print("  A2A Protocol Demo — Orchestrator Pattern")
-    print("  Single endpoint routes to the right agent")
-    print("=" * 55)
+    print("\n" + "=" * 60)
+    print("  A2A Client Demo — True Discovery + Routing")
+    print("=" * 60)
 
     try:
-        # ── Step 1: Discover ──────────────────────────────────
-        print("\n  STEP 1 — Agent Discovery")
-        print("  GET /.well-known/agent.json\n")
-        card = await discover()
+        # ── STEP 1: Fetch agent card (A2A Discovery) ──────────────────────────
+        print("\n  STEP 1 — A2A Discovery")
+        print(f"  GET {SERVER}/.well-known/agent.json\n")
+
+        card = await fetch_card(SERVER)
+
         print(f"  Agent   : {card['name']}")
         print(f"  About   : {card['description']}")
         print(f"  Skills  :")
         for s in card["skills"]:
-            print(f"    - {s['name']}: {s['description']}")
+            print(f"    [{s['id']}]  {s['name']}")
+            print(f"      Tags : {', '.join(s['tags'][:6])}...")
 
-        # ── Step 2: Weather queries (routed to weather_agent) ─
-        print("\n" + "-" * 55)
-        print("  STEP 2 — Weather Queries  -->  routed to weather_agent")
-        print("-" * 55)
+        # ── STEP 2: Match queries against card skills ─────────────────────────
+        print("\n" + "-" * 60)
+        print("  STEP 2 — Skill Matching + Message Send")
+        print("  (client reads card skills, matches tags, then sends)\n")
 
-        weather_queries = [
-            ("w-001", "What is the weather in Bangalore?"),
-            ("w-002", "How is the weather in Mumbai?"),
+        queries = [
+            ("q-001", "What is the weather in Bangalore?"),
+            ("q-002", "Should I buy AAPL?"),
+            ("q-003", "How is the weather in Mumbai?"),
+            ("q-004", "Give me analysis of NVDA"),
+            ("q-005", "Is it sunny in Chennai?"),
+            ("q-006", "Quick look at RELIANCE stock"),
         ]
-        for req_id, q in weather_queries:
-            result = await send(req_id, q)
-            show("Weather", q, result)
+
+        for req_id, query in queries:
+            print(f"\n  {'─' * 56}")
+
+            # Match against agent card — this is the real A2A discovery step
+            matched = match_skill(query, card)
+
+            if matched:
+                print(f"  Card match found: '{matched['name']}'")
+                result = await send(req_id, query)
+                show(query, matched, result)
+            else:
+                print(f"  No card match — sending anyway, orchestrator will decide")
+                result = await send(req_id, query)
+                show(query, None, result)
+
             await asyncio.sleep(0.5)
 
-        # ── Step 3: Stock queries (routed to stock_agent) ─────
-        print("-" * 55)
-        print("  STEP 3 — Stock Queries    -->  routed to stock_agent")
-        print("-" * 55)
-
-        stock_queries = [
-            ("s-001", "Give me a quick analysis of AAPL"),
-            ("s-002", "Should I buy TSLA?"),
-        ]
-        for req_id, q in stock_queries:
-            result = await send(req_id, q)
-            show("Stock", q, result)
-            await asyncio.sleep(0.5)
-
-        # ── Step 4: Mixed — orchestrator picks the right one ──
-        print("-" * 55)
-        print("  STEP 4 — Mixed Queries (orchestrator decides routing)")
-        print("-" * 55)
-
-        mixed = [
-            ("m-001", "weather in Delhi"),
-            ("m-002", "How is NVDA stock doing?"),
-            ("m-003", "Is it sunny in Chennai?"),
-            ("m-004", "Quick analysis of RELIANCE"),
-        ]
-        for req_id, q in mixed:
-            result = await send(req_id, q)
-            show("Mixed", q, result)
-            await asyncio.sleep(0.5)
-
-        print("=" * 55)
+        print("\n" + "=" * 60)
         print("  Demo complete!")
-        print("=" * 55 + "\n")
+        print("=" * 60 + "\n")
 
     except httpx.ConnectError:
         print("\n  Could not connect. Start the server first:")
