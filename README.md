@@ -106,11 +106,14 @@ OPENAI_API_KEY=sk-your-key-here
 
 Shows each A2A step live as the request flows through the system.
 
+> **Both commands are required in separate terminals.**
+> The UI only provides the chat interface — the agents run separately.
+
 ```bash
-# Terminal 1 — start both remote agents
+# Terminal 1 — start both remote agents FIRST
 python main.py
 
-# Terminal 2 — start the UI
+# Terminal 2 — then start the UI
 streamlit run ui.py
 ```
 
@@ -137,6 +140,23 @@ The CLI client will:
 2. Print each agent's name, skills, and example queries
 3. Run 6 sample queries — matching each to the right agent automatically
 4. Print the routing decision and response for each query
+
+---
+
+### Troubleshooting — Port already in use
+
+If you see `[Errno 10048] error while attempting to bind on address` when running `main.py`, a previous server process is still holding the port.
+
+**Find and kill it (Windows):**
+```bash
+# Find the process ID (PID) on port 8001
+netstat -ano | findstr ":8001"
+
+# Kill it (replace 12568 with your actual PID)
+taskkill /PID 12568 /F
+```
+
+Repeat for port 8002 if needed. Then run `python main.py` again.
 
 ---
 
