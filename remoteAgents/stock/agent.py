@@ -1,6 +1,6 @@
 from google.adk.agents.llm_agent import Agent
 from google.adk.models.lite_llm import LiteLlm
-from agents.stock.stock_tool import get_stock
+from remoteAgents.stock.stock_tool import get_stock
 from dotenv import load_dotenv
 import os
 

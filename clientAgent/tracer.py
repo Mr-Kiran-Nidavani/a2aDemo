@@ -17,9 +17,9 @@ Each yielded item is one of:
 import json
 import uuid
 
-from a2a.agent_card import AGENT_CARD
-from a2a.discovery import match_skill, skill_to_agent
-from a2a.runner import create_session, run_agent_iter
+from clientAgent.agent_card import AGENT_CARD
+from clientAgent.discovery import match_skill, skill_to_agent
+from clientAgent.runner import make_session, drop_session, run_agent_iter
 
 
 def _trace(step: int, icon: str, label: str, detail: str) -> dict:

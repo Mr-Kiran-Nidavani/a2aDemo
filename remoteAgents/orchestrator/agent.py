@@ -16,8 +16,8 @@ from google.adk.models.lite_llm import LiteLlm
 from dotenv import load_dotenv
 import os
 
-from agents.weather.agent import root_agent as weather_agent
-from agents.stock.agent import root_agent as stock_agent
+from remoteAgents.weather.agent import root_agent as weather_agent
+from remoteAgents.stock.agent import root_agent as stock_agent
 
 load_dotenv()
 

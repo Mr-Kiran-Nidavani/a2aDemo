@@ -155,14 +155,14 @@ a2aDemo/
 ├── client_demo.py         ← CLI client — discovers agent card, matches skills, sends requests
 ├── ui.py                  ← Streamlit chat UI with live request trace
 │
-├── a2a/                   ← A2A protocol layer (HTTP-facing)
+├── clientAgent/           ← A2A protocol layer (HTTP-facing)
 │   ├── agent_card.py      ← Agent's "business card" — name, skills, tags, capabilities
 │   ├── discovery.py       ← Reads agent card, matches query to skill, identifies routing
 │   ├── server.py          ← FastAPI server — receives and validates HTTP requests
 │   ├── runner.py          ← Pure ADK execution — creates session, runs agent, returns text
 │   └── tracer.py          ← Wraps runner with live trace steps for the Streamlit UI
 │
-└── agents/                ← The actual AI agents
+└── remoteAgents/          ← The actual AI agents
     ├── orchestrator/
     │   └── agent.py       ← Receives message, delegates to the right specialist via AgentTool
     ├── weather/

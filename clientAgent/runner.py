@@ -15,7 +15,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from agents.orchestrator.agent import orchestrator
+from remoteAgents.orchestrator.agent import orchestrator
 
 
 APP_NAME = "a2a_demo"

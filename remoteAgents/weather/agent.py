@@ -1,5 +1,5 @@
 from google.adk.agents.llm_agent import Agent
-from agents.weather.weather_tool import get_weather
+from remoteAgents.weather.weather_tool import get_weather
 from dotenv import load_dotenv
 from google.adk.models.lite_llm import LiteLlm
 import os

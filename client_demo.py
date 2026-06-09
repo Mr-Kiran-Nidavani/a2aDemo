@@ -15,7 +15,7 @@ import asyncio
 import httpx
 import json
 
-from a2a.discovery import fetch_card, match_skill, skill_to_agent
+from clientAgent.discovery import fetch_card, match_skill, skill_to_agent
 
 SERVER = "http://localhost:8000"
 

@@ -9,8 +9,8 @@ Run:
 """
 import asyncio
 import streamlit as st
-from a2a.tracer import run_agent_with_trace
-from a2a.runner import run_agent
+from clientAgent.tracer import run_agent_with_trace
+from clientAgent.runner import run_agent
 
 
 # ── Page config ───────────────────────────────────────────────────────────────

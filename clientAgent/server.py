@@ -7,9 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 
-from a2a.agent_card import AGENT_CARD
-from a2a.runner import run_agent
-from agents.orchestrator.agent import orchestrator
+from clientAgent.agent_card import AGENT_CARD
+from clientAgent.runner import run_agent
+from remoteAgents.orchestrator.agent import orchestrator
 
 
 app = FastAPI(
