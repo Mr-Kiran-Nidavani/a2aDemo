@@ -9,8 +9,8 @@ Run:
 """
 import asyncio
 import streamlit as st
-from clientAgent.tracer import run_agent_with_trace
-from clientAgent.runner import run_agent
+from clientAgent.tracer import run_agent_with_trace  # noqa: E402
+from clientAgent.runner import run_agent  # noqa: E402
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -146,7 +146,7 @@ async def process_simple(user_message: str) -> tuple[str, list]:
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.title("🌐 A2A Multi-Agent Demo")
-st.caption("One endpoint · Orchestrator routes to Weather Agent or Stock Agent")
+st.caption("Client discovers remote agents · routes by skill tags · no orchestrator")
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 

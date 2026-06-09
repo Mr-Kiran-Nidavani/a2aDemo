@@ -1,116 +1,126 @@
 """
-A2A Protocol Client Demo — Orchestrator Pattern
+A2A Protocol Client Demo
 
-Demonstrates true A2A flow:
-  1. Client fetches agent card  (discovery)
-  2. Matches query against card skills  (capability check)
-  3. Sends message only if a skill matches
-  4. Prints the A2A response
+Demonstrates true A2A client flow (no orchestrator):
+  1. Discovers remote agent cards  (/.well-known/agent-card.json)
+  2. Matches query against skill tags on each card
+  3. Sends message directly to the matched agent via A2A SDK Client
+  4. Prints the response
 
 Usage:
     python client_demo.py
-    (requires server running: python main.py)
+    (requires remote agents running: python main.py)
 """
 import asyncio
+
 import httpx
-import json
 
-from clientAgent.discovery import fetch_card, match_skill, skill_to_agent
+from a2a.client.client_factory import ClientConfig, ClientFactory
 
-SERVER = "http://localhost:8000"
+from clientAgent.discovery import (
+    card_name,
+    discover_all_cards,
+    discover_and_match,
+    skill_name,
+    skill_to_agent,
+)
+from clientAgent.runner import _build_request, _extract_text
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-async def send(req_id: str, text: str) -> dict:
-    body = {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": "message/send",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": text}]
-            }
-        }
-    }
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        r = await client.post(f"{SERVER}/a2a", json=body)
-        return r.json()
+async def send_to_agent(text: str, card, http_client: httpx.AsyncClient) -> str:
+    """Send a message directly to a remote agent using the A2A SDK Client."""
+    factory = ClientFactory(ClientConfig(httpx_client=http_client, streaming=False))
+    client = factory.create(card)
+    request = _build_request(text)
+
+    final_text = ""
+    async for response in client.send_message(request):
+        t = _extract_text(response)
+        if t:
+            final_text = t
+    return final_text
 
 
-def show(query: str, matched_skill: dict | None, result: dict):
-    skill_name = matched_skill["name"] if matched_skill else "Unknown — LLM decides"
-    agent_name = skill_to_agent(matched_skill)
+def show(query: str, matched_skill, base_url: str | None, answer: str):
+    skill_label = skill_name(matched_skill) if matched_skill else "None"
+    agent_name = skill_to_agent(matched_skill) if matched_skill else "—"
     print(f"\n  Query         : {query}")
-    print(f"  Skill matched : {skill_name}")
+    print(f"  Skill matched : {skill_label}")
+    print(f"  Agent URL     : {base_url or '—'}")
     print(f"  Routes to     : {agent_name}")
-    if "result" in result:
-        answer = result["result"]["message"]["parts"][0]["text"]
-        print(f"  Answer        : {answer}")
-    else:
-        print(f"  Error         : {result.get('error', 'unknown')}")
+    print(f"  Answer        : {answer}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
-    print("\n" + "=" * 60)
-    print("  A2A Client Demo — True Discovery + Routing")
-    print("=" * 60)
+    print("\n" + "=" * 64)
+    print("  A2A Client Demo — Discovery + Direct Remote Routing")
+    print("=" * 64)
 
     try:
-        # ── STEP 1: Fetch agent card (A2A Discovery) ──────────────────────────
-        print("\n  STEP 1 — A2A Discovery")
-        print(f"  GET {SERVER}/.well-known/agent.json\n")
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
 
-        card = await fetch_card(SERVER)
+            # ── STEP 1: Discover all remote agent cards ───────────────────────
+            print(f"\n  STEP 1 — A2A Discovery (remote agents)\n")
 
-        print(f"  Agent   : {card['name']}")
-        print(f"  About   : {card['description']}")
-        print(f"  Skills  :")
-        for s in card["skills"]:
-            print(f"    [{s['id']}]  {s['name']}")
-            print(f"      Tags : {', '.join(s['tags'][:6])}...")
+            discovered = await discover_all_cards(http_client)
+            for base_url, card_dict in discovered:
+                print(f"  GET {base_url}/.well-known/agent-card.json")
+                print(f"  Agent   : {card_dict.get('name', '?')}")
+                print(f"  About   : {card_dict.get('description', '')[:80]}...")
+                print(f"  Skills  :")
+                for s in card_dict.get("skills", []):
+                    print(f"    [{s['id']}]  {s['name']}")
+                    print(f"      Tags : {', '.join(s['tags'][:6])}...")
+                print()
 
-        # ── STEP 2: Match queries against card skills ─────────────────────────
-        print("\n" + "-" * 60)
-        print("  STEP 2 — Skill Matching + Message Send")
-        print("  (client reads card skills, matches tags, then sends)\n")
+            # ── STEP 2: Skill match + direct send per query ───────────────────
+            print("-" * 64)
+            print("  STEP 2 — Skill Matching + Direct A2A Message Send")
+            print("  (client matches tags, calls the right remote agent)\n")
 
-        queries = [
-            ("q-001", "What is the weather in Bangalore?"),
-            ("q-002", "Should I buy AAPL?"),
-            ("q-003", "How is the weather in Mumbai?"),
-            ("q-004", "Give me analysis of NVDA"),
-            ("q-005", "Is it sunny in Chennai?"),
-            ("q-006", "Quick look at RELIANCE stock"),
-        ]
+            queries = [
+                "What is the weather in Bangalore?",
+                "Should I buy AAPL?",
+                "How is the weather in Mumbai?",
+                "Give me analysis of NVDA",
+                "Is it sunny in Chennai?",
+                "Quick look at RELIANCE stock",
+            ]
 
-        for req_id, query in queries:
-            print(f"\n  {'─' * 56}")
+            for query in queries:
+                print(f"\n  {'-' * 60}")
+                matched, card, base_url = await discover_and_match(query, http_client)
 
-            # Match against agent card — this is the real A2A discovery step
-            matched = match_skill(query, card)
+                if matched:
+                    print(
+                        f"  Card match: '{skill_name(matched)}' on "
+                        f"{card_name(card)}  ->  sending via A2A SDK"
+                    )
+                    answer = await send_to_agent(query, card, http_client)
+                else:
+                    print("  No skill match on any remote agent card")
+                    answer = (
+                        "I could not find a suitable agent for your request. "
+                        "Try asking about weather in a city or a stock analysis."
+                    )
 
-            if matched:
-                print(f"  Card match found: '{matched['name']}'")
-                result = await send(req_id, query)
-                show(query, matched, result)
-            else:
-                print(f"  No card match — sending anyway, orchestrator will decide")
-                result = await send(req_id, query)
-                show(query, None, result)
+                show(query, matched, base_url, answer)
+                await asyncio.sleep(0.5)
 
-            await asyncio.sleep(0.5)
-
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 64)
         print("  Demo complete!")
-        print("=" * 60 + "\n")
+        print("=" * 64 + "\n")
 
     except httpx.ConnectError:
-        print("\n  Could not connect. Start the server first:")
+        print("\n  Could not connect. Start remote agents first:")
         print("  python main.py\n")
+    except Exception as e:
+        print(f"\n  Error: {e}")
+        raise
 
 
 if __name__ == "__main__":

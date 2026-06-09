@@ -1,119 +1,166 @@
-# A2A Protocol Demo — Weather + Stock Agents
+# A2A Protocol Demo — Multi-Agent Weather + Stock
+
+A hands-on demo of Google's **[Agent-to-Agent (A2A) protocol](https://google.github.io/A2A/)** using the official **[`a2a-sdk`](https://pypi.org/project/a2a-sdk/)**. Two specialist agents run as independent HTTP servers. The **client** discovers their agent cards, matches skills, and calls the right agent directly — no orchestrator in the middle.
 
 ---
 
 ## Table of Contents
 
 1. [What is A2A?](#1-what-is-a2a)
-2. [How A2A Works](#2-how-a2a-works)
+2. [A2A vs MCP — When to Use Which](#2-a2a-vs-mcp--when-to-use-which)
 3. [About This Project](#3-about-this-project)
-4. [Installation](#4-installation)
-5. [Project Structure](#5-project-structure)
-6. [How a Request Flows Through the Code](#6-how-a-request-flows-through-the-code)
-7. [Code Snippets — How the Pieces Connect](#7-code-snippets--how-the-pieces-connect)
+4. [Architecture](#4-architecture)
+5. [Installation (uv)](#5-installation-uv)
+6. [Project Structure](#6-project-structure)
+7. [How a Request Flows](#7-how-a-request-flows)
 8. [How to Run](#8-how-to-run)
-   - [Option A — Streamlit UI](#option-a--streamlit-ui-recommended)
-   - [Option B — CLI Client](#option-b--cli-client)
-   - [Option C — API Docs / Postman](#option-c--api-docs--postman)
-9. [Sample Requests and Responses](#9-sample-requests-and-responses)
+9. [Sample Queries](#9-sample-queries)
 10. [Endpoints Reference](#10-endpoints-reference)
 
 ---
 
 ## 1. What is A2A?
 
-**A2A (Agent-to-Agent)** is a protocol that lets AI agents talk to each other over HTTP using a standard message format (JSON-RPC).
+**A2A (Agent-to-Agent)** is an open protocol from Google that lets AI agents discover each other and exchange tasks over standard HTTP using JSON-RPC.
 
-Think of it like this:
+| Layer | Protocol | Connects |
+|---|---|---|
+| Web | HTTP | Browsers ↔ servers |
+| Tools | MCP | Models ↔ tools & data sources |
+| **Agents** | **A2A** | **Agents ↔ agents** |
 
-| Protocol | Used for |
-|---|---|
-| HTTP | Web browsers talking to servers |
-| MCP | AI models talking to tools |
-| **A2A** | **AI agents talking to other AI agents** |
+### Core concepts
 
-One agent sends a message. Another receives it, processes it, and sends back a response. Neither agent needs to know how the other is built internally.
+**Agent Card** — Every A2A agent publishes a machine-readable card at:
+
+```
+GET /.well-known/agent-card.json
+```
+
+The card describes the agent's name, skills, tags, supported transports, and interface URLs. Clients read it *before* sending work.
+
+**Skills** — Declared capabilities on the card (e.g. `weather_lookup`, `stock_analysis`) with tags used for routing.
+
+**Tasks & Messages** — Clients send a `SendMessage` JSON-RPC request. The server creates a task, processes it, and returns the result as a structured message.
+
+**True agent boundaries** — Each agent is a separate process with its own URL. The **client** discovers agent cards, matches skills, and calls the right agent over HTTP — the standard A2A pattern.
 
 ---
 
-## 2. How A2A Works
+## 2. A2A vs MCP — When to Use Which
 
-```
-Agent A (client)                    Agent B (server)
-      │                                   │
-      │  1. GET /.well-known/agent.json   │
-      │ ─────────────────────────────────►│  "What can you do?"
-      │◄─────────────────────────────────│  Returns agent card (skills, capabilities)
-      │                                   │
-      │  2. POST /a2a  (JSON-RPC)         │
-      │ ─────────────────────────────────►│  "weather in Bangalore"
-      │◄─────────────────────────────────│  "26°C, Cloudy"
-      │                                   │
-```
+Both protocols extend what LLMs can do, but they solve different problems.
 
-Every A2A message follows this shape:
+| | **MCP (Model Context Protocol)** | **A2A (Agent-to-Agent)** |
+|---|---|---|
+| **Connects** | A model to **tools & resources** | An agent to **other agents** |
+| **Unit of work** | Tool call / resource read | Task with messages & lifecycle |
+| **Discovery** | Server capability list | Agent Card with skills & tags |
+| **Autonomy** | Tools are passive — they execute when called | Agents are autonomous — they reason, delegate, and respond |
+| **Deployment** | Usually co-located with the host app | Independent services across teams / clouds |
+| **Best for** | DB queries, file access, APIs, calculators | Specialist agents owned by different teams, long-running workflows, cross-org collaboration |
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "1",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "role": "user",
-      "parts": [{ "type": "text", "text": "your question here" }]
-    }
-  }
-}
-```
+### Why A2A is beneficial over MCP for agent systems
+
+1. **Agent autonomy** — MCP tools don't think; they return data. A2A agents are full reasoning systems that can plan, use their own tools, and return finished answers.
+
+2. **Decoupled ownership** — Weather and stock agents here run on separate ports (8001, 8002). Teams can deploy, version, and scale them independently. MCP servers are typically bundled with the host.
+
+3. **Standard discovery** — Any A2A client can fetch an agent card and know what skills are available without custom integration code.
+
+4. **Task lifecycle** — A2A tracks task state (`working`, `completed`, etc.), supports streaming, push notifications, and cancellation — beyond a single tool-call round trip.
+
+5. **Composable ecosystems** — Agents from different vendors (built with ADK, LangGraph, CrewAI, etc.) can interoperate as long as they speak A2A.
+
+> **In practice:** Use MCP when your model needs direct access to tools. Use A2A when you need agents to collaborate as peers across service boundaries. They complement each other — an A2A agent can internally use MCP tools.
 
 ---
 
 ## 3. About This Project
 
-This project runs **one server** with **two specialist agents** behind an **orchestrator**.
+This demo runs **two A2A-compliant remote agents** plus a **client** that performs discovery and routing:
 
-- You send any message to a single endpoint
-- The orchestrator reads your message and decides which agent should handle it
-- The right agent answers — you never talk to the specialist agents directly
+| Component | Port | Role |
+|---|---|---|
+| **Weather Agent** | 8001 | Specialist — city weather lookup + LLM formatting |
+| **Stock Agent** | 8002 | Specialist — stock price lookup + LLM analysis |
+| **Client** (UI / CLI) | — | Discovers agent cards, matches skill tags, calls the right agent |
 
-```
-You ──► Orchestrator ──► Weather Agent  (city weather questions)
-                    └──► Stock Agent    (stock price + analysis)
-```
+There is **no orchestrator agent**. The Streamlit UI and CLI demo act as true A2A clients: they fetch `/.well-known/agent-card.json` from each remote agent, match the user's query against skill tags, and send the `SendMessage` request directly to the matched agent.
 
-Agents are built with **Google ADK** and exposed over the **A2A protocol** via **FastAPI**.
+**Stack:**
+- [`a2a-sdk`](https://pypi.org/project/a2a-sdk/) — official A2A protocol (server routes, client, agent card types)
+- **FastAPI + Uvicorn** — HTTP servers
+- **LiteLLM** — LLM formatting inside specialist agents (OpenAI GPT-3.5-turbo)
 
 ---
 
-## 4. Installation
+## 4. Architecture
 
-### Step 1 — Install uv
+```
+┌─────────────────────────────────────────────────────────────┐
+│  A2A Client  (Streamlit UI / CLI)                           │
+│                                                             │
+│  1. GET agent-card.json from :8001 and :8002  (discovery)   │
+│  2. Match query tags → weather_lookup | stock_analysis      │
+│  3. POST SendMessage directly to matched agent              │
+└───────────────┬─────────────────────────┬───────────────────┘
+                │ A2A JSON-RPC            │ A2A JSON-RPC
+                ▼                         ▼
+      ┌─────────────────┐     ┌─────────────────┐
+      │ Weather Agent   │     │ Stock Agent     │
+      │ port 8001       │     │ port 8002       │
+      │ get_weather()   │     │ get_stock()     │
+      │ + LLM format    │     │ + LLM format    │
+      └─────────────────┘     └─────────────────┘
+```
 
-uv is a fast Python package manager. Install it once on your machine.
+**Discovery flow (client-side routing):**
+
+```
+1. GET  /.well-known/agent-card.json  on each known agent URL
+2. Read skills & tags from each card
+3. Match user query → pick weather or stock agent
+4. POST /  (JSON-RPC SendMessage)  directly to that agent
+5. Remote agent processes task → response returned to client
+```
+
+---
+
+## 5. Installation (uv)
+
+[uv](https://docs.astral.sh/uv/) is a fast Python package manager. This project targets **Python 3.11+**.
+
+### Option A — `uv sync` (recommended)
 
 ```bash
+# Install uv (once)
 pip install uv
+
+# Clone / enter the project, then:
+uv sync
+
+# Create your environment file
+copy .env.example .env        # Windows
+# cp .env.example .env        # Mac / Linux
+
+# Edit .env and set your OpenAI key:
+# OPENAI_API_KEY=sk-your-key-here
 ```
 
-> Already have uv? Skip to Step 2.
+`uv sync` reads `pyproject.toml`, creates `.venv`, and installs all dependencies.
 
----
-
-### Step 2 — Create a virtual environment
+### Option B — manual venv
 
 ```bash
 uv venv
+uv pip install -r requirements.txt
 ```
 
-Creates a `.venv` folder — an isolated Python environment so packages don't conflict with other projects.
+### Activate the virtual environment
 
----
-
-### Step 3 — Activate the virtual environment
-
-**Windows:**
-```bash
+**Windows (PowerShell):**
+```powershell
 .venv\Scripts\activate
 ```
 
@@ -122,404 +169,168 @@ Creates a `.venv` folder — an isolated Python environment so packages don't co
 source .venv/bin/activate
 ```
 
-Your terminal prompt will show `(.venv)` when active.
-
 ---
 
-### Step 4 — Install dependencies
-
-```bash
-uv pip install -r requirements.txt
-```
-
-Installs FastAPI, Google ADK, LiteLLM, Streamlit, and everything else the project needs.
-
----
-
-### Step 5 — Add your API key
-
-Open the `.env` file and set your OpenAI key:
-
-```
-OPENAI_API_KEY=sk-your-key-here
-```
-
----
-
-## 5. Project Structure
+## 6. Project Structure
 
 ```
 a2aDemo/
 │
-├── main.py                ← Starts the A2A server on port 8000
-├── client_demo.py         ← CLI client — discovers agent card, matches skills, sends requests
-├── ui.py                  ← Streamlit chat UI with live request trace
+├── main.py                         ← Starts remote A2A agents (8001, 8002)
+├── client_demo.py                  ← CLI A2A client — discovery + direct routing
+├── ui.py                           ← Streamlit A2A client with live trace
+├── pyproject.toml                  ← Project metadata & dependencies (uv)
+├── requirements.txt                ← Pip-compatible dependency list
 │
-├── clientAgent/           ← A2A protocol layer (HTTP-facing)
-│   ├── agent_card.py      ← Agent's "business card" — name, skills, tags, capabilities
-│   ├── discovery.py       ← Reads agent card, matches query to skill, identifies routing
-│   ├── server.py          ← FastAPI server — receives and validates HTTP requests
-│   ├── runner.py          ← Pure ADK execution — creates session, runs agent, returns text
-│   └── tracer.py          ← Wraps runner with live trace steps for the Streamlit UI
+├── clientAgent/                    ← A2A client layer (discovery + routing)
+│   ├── discovery.py                ← Fetch agent cards, match skill tags
+│   ├── runner.py                   ← Discover + call remote agent directly
+│   └── tracer.py                   ← Live step-by-step trace for Streamlit
 │
-└── remoteAgents/          ← The actual AI agents
-    ├── orchestrator/
-    │   └── agent.py       ← Receives message, delegates to the right specialist via AgentTool
+└── remoteAgents/                   ← Specialist A2A agents (separate processes)
     ├── weather/
-    │   ├── agent.py       ← Weather LLM agent
-    │   └── weather_tool.py   ← Returns weather data for a city
+    │   ├── server.py               ← Weather A2A server (port 8001)
+    │   ├── agent_executor.py       ← Task handler — tool + LLM
+    │   └── weather_tool.py         ← Mock weather data
     └── stock/
-        ├── agent.py       ← Stock LLM agent
-        └── stock_tool.py     ← Returns stock price and sentiment
+        ├── server.py               ← Stock A2A server (port 8002)
+        ├── agent_executor.py       ← Task handler — tool + LLM
+        └── stock_tool.py           ← Mock stock data
 ```
+
+> **Legacy files** (not used by `main.py`): `clientAgent/server.py`, `clientAgent/agent_card.py`, and `remoteAgents/orchestrator/` contain an earlier single-server ADK prototype. The current demo uses the multi-server `a2a-sdk` architecture above.
 
 ---
 
-## 6. How a Request Flows Through the Code
+## 7. How a Request Flows
 
-What happens when you send `"weather in Bangalore"`:
+Example: `"weather in Bangalore"`
 
 ```
-You (UI or client)
+You (UI or CLI)  — acts as A2A client
       │
-      │  POST /a2a
-      │  { "method": "message/send", "text": "weather in Bangalore" }
+      │  1. GET /.well-known/agent-card.json  (:8001, :8002)
+      │  2. match_skill("weather" tag → weather_lookup on Weather card)
+      │  3. POST http://localhost:8001/  (SendMessage)
       ▼
-server.py  ── validates the JSON-RPC shape, extracts the text
-      │
-      ▼
-runner.py  ── creates an ADK session, feeds the message to the orchestrator
+weather/server.py  ── a2a-sdk JSON-RPC handler receives the task
       │
       ▼
-orchestrator/agent.py  ── LLM reads the message, picks weather_agent
-      │
+weather/agent_executor.py
+      │  1. Extract city from message
+      │  2. get_weather("Bangalore") → { temp: 26°C, ... }
+      │  3. LiteLLM formats natural-language answer
+      │  4. TaskUpdater.complete(message=...)
       ▼
-weather/agent.py  ── LLM decides to call the get_weather tool
-      │
-      ▼
-weather/weather_tool.py  ── returns { temp: "26°C", condition: "Cloudy", ... }
-      │
-      ▼
-weather/agent.py  ── LLM formats: "It is 26°C and Cloudy in Bangalore..."
-      │
-      ▼
-runner.py  ── captures the final response
-      │
-      ▼
-server.py  ── wraps it in A2A JSON-RPC response format
-      │
-      ▼
-You  ── see the answer
-```
-
----
-
-## 7. Code Snippets — How the Pieces Connect
-
-### 1. The Tool — raw data lookup
-
-Just a plain Python function. No AI — just a lookup.
-
-```python
-# agents/weather/weather_tool.py
-def get_weather(city: str) -> dict:
-    weather_data = {
-        "bangalore": {"temperature": "26°C", "condition": "Cloudy", ...},
-        "mumbai":    {"temperature": "31°C", "condition": "Humid",  ...},
-    }
-    return weather_data.get(city.lower(), {"status": "not_found"})
-```
-
----
-
-### 2. The Specialist Agent — LLM + tool
-
-The agent is an LLM that knows about the tool. It calls `get_weather` and formats the answer.
-
-```python
-# agents/weather/agent.py
-root_agent = Agent(
-    name="weather_agent",
-    instruction="Answer weather questions using the get_weather tool.",
-    tools=[get_weather]   # ← tool attached here
-)
-```
-
-Same pattern for stock:
-
-```python
-# agents/stock/agent.py
-root_agent = Agent(
-    name="stock_agent",
-    instruction="Respond in 3 lines: price, sentiment, verdict.",
-    tools=[get_stock]
-)
-```
-
----
-
-### 3. The Orchestrator — routing logic
-
-Wraps both specialist agents as `AgentTool`. Reads intent and delegates.
-
-```python
-# agents/orchestrator/agent.py
-orchestrator = Agent(
-    name="orchestrator",
-    instruction="""
-        If weather question → delegate to weather_agent
-        If stock question   → delegate to stock_agent
-        Never answer yourself. Always delegate.
-    """,
-    tools=[
-        AgentTool(agent=weather_agent),  # ← weather agent as a callable
-        AgentTool(agent=stock_agent),    # ← stock agent as a callable
-    ]
-)
-```
-
----
-
-### 4. The Runner — ADK bridge
-
-Takes plain text, runs it through the orchestrator, returns the final answer.
-
-```python
-# a2a/runner.py
-async def run_agent(user_message: str) -> str:
-    session_id = str(uuid.uuid4())   # fresh session every time
-
-    async for event in runner.run_async(...):
-        if event.is_final_response():  # skip tool calls, take only the final answer
-            final_response = event.content.parts[0].text
-            break
-
-    return final_response
-```
-
----
-
-### 5. The Server — A2A HTTP layer
-
-Receives JSON-RPC, calls the runner, wraps the result back in JSON-RPC.
-
-```python
-# a2a/server.py
-@app.post("/a2a")
-async def a2a_endpoint(body: A2ARequest):
-    user_text = body.params.message.parts[0].text  # extract the message
-    result = await run_agent(user_text)             # run through orchestrator
-
-    return {
-        "jsonrpc": "2.0",
-        "id": body.id,
-        "result": {
-            "status": "completed",
-            "message": {"role": "agent", "parts": [{"type": "text", "text": result}]}
-        }
-    }
-```
-
----
-
-### 6. The Agent Card — discovery
-
-Any client can ask "what can you do?" before sending a message.
-
-```python
-# a2a/agent_card.py
-AGENT_CARD = {
-    "name": "orchestrator",
-    "skills": [
-        { "id": "weather_lookup", "name": "Weather Lookup" },
-        { "id": "stock_analysis", "name": "Stock Analysis" }
-    ]
-}
-
-# a2a/server.py
-@app.get("/.well-known/agent.json")
-async def agent_card():
-    return AGENT_CARD   # ← any agent or client can discover capabilities here
+You  ── see: "In Bangalore, the current weather is cloudy at 26°C..."
 ```
 
 ---
 
 ## 8. How to Run
 
----
+> **Important:** Start the remote agents first. The UI and CLI are A2A *clients* — they discover agents and call them directly.
+
+### Step 1 — Start remote A2A agents
+
+**Terminal 1:**
+```bash
+python main.py
+```
+
+You should see:
+```
+Weather Agent                  http://localhost:8001
+Stock Agent                    http://localhost:8002
+```
+
+Verify discovery:
+```bash
+curl http://localhost:8001/.well-known/agent-card.json
+curl http://localhost:8002/.well-known/agent-card.json
+```
 
 ### Option A — Streamlit UI (recommended)
 
-The UI includes a chat window and an optional **live request trace panel**. Use the **"Show request trace"** checkbox in the sidebar to switch between modes.
-
-**No need to start the server separately. Just run:**
-
+**Terminal 2:**
 ```bash
 streamlit run ui.py
 ```
 
 Opens at **http://localhost:8501**
 
-**Trace ON** (default) — two-column layout, shows each step live:
+- **Trace ON** (sidebar checkbox) — two-column layout showing each A2A step live: card discovery → skill match → direct send → response
+- **Trace OFF** — simple chat, client routes directly to the matched remote agent
 
-```
-┌──────────────────────┬──────────────────────────────────┐
-│  Chat                │  Live Request Flow               │
-│                      │                                  │
-│  You: weather in     │  Step 1  Agent Card read         │
-│       Bangalore      │          Skills: Weather, Stock  │
-│                      │                                  │
-│  Agent: 26°C,        │  Step 2  Skill matched: Weather  │
-│  Cloudy in           │          Tag: "weather"          │
-│  Bangalore...        │                                  │
-│                      │  Step 3  A2A Request sent        │
-│  > type here...      │          POST /a2a               │
-│                      │                                  │
-│                      │  Step 4  Orchestrator thinking   │
-│                      │                                  │
-│                      │  Step 5  Tool called:            │
-│                      │          get_weather("bangalore")│
-│                      │                                  │
-│                      │  Step 6  Tool response           │
-│                      │          { temp: 26°C, ... }     │
-│                      │                                  │
-│                      │  Step 7  A2A Response returned   │
-└──────────────────────┴──────────────────────────────────┘
-```
-
-**Trace OFF** — single-column chat only, calls `run_agent()` directly with no trace overhead. Faster, cleaner.
-
-Try these queries in the chat:
+**Try:**
 - `weather in Bangalore`
 - `How is the weather in Delhi?`
 - `Should I buy AAPL?`
 - `Give me analysis of NVDA`
 
----
+### Option B — CLI client
 
-### Option B — CLI Client
-
-Runs a scripted demo from the terminal. Tests weather queries, stock queries, and mixed queries automatically.
-
-**Terminal 1 — start the server:**
-```bash
-python main.py
-```
-
-**Terminal 2 — run the client:**
+**Terminal 2:**
 ```bash
 python client_demo.py
 ```
 
-The client will:
-1. Discover the agent via `/.well-known/agent.json`
-2. Send weather queries → prints request + response
-3. Send stock queries → prints request + response
-4. Send mixed queries → orchestrator decides routing
+Runs scripted queries demonstrating A2A discovery, skill matching, and multi-agent routing.
+
+### Option C — Swagger / API docs
+
+With servers running, open interactive docs:
+
+| Agent | Swagger UI |
+|---|---|
+| Weather | http://localhost:8001/docs |
+| Stock | http://localhost:8002/docs |
 
 ---
 
-### Option C — API Docs / Postman
+## 9. Sample Queries
 
-Start the server and open the interactive Swagger UI in your browser.
+The client discovers both agents, matches skill tags, and sends traffic **directly** to `http://localhost:8001` or `http://localhost:8002`. The A2A SDK handles JSON-RPC serialization.
 
-```bash
-python main.py
-```
+**Weather examples:**
+- `What is the weather in Bangalore?`
+- `Is it raining in Mumbai?`
+- `How is the weather in Chennai?`
 
-Then open: **http://localhost:8000/docs**
+**Stock examples:**
+- `Should I buy AAPL?`
+- `Give me analysis of NVDA`
+- `Quick look at RELIANCE stock`
 
-You can try all endpoints directly in the browser — no extra tools needed. Use the `/a2a` POST endpoint with the sample JSON from the next section.
+**Supported mock data:**
 
----
-
-## 9. Sample Requests and Responses
-
-All requests go to `POST http://localhost:8000/a2a`
-
----
-
-### Weather query
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "1",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "role": "user",
-      "parts": [{ "type": "text", "text": "What is the weather in Bangalore?" }]
-    }
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "1",
-  "result": {
-    "status": "completed",
-    "message": {
-      "role": "agent",
-      "parts": [{ "type": "text", "text": "The weather in Bangalore is 26°C and Cloudy with 72% humidity." }]
-    }
-  }
-}
-```
-
----
-
-### Stock query
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "2",
-  "method": "message/send",
-  "params": {
-    "message": {
-      "role": "user",
-      "parts": [{ "type": "text", "text": "Should I buy AAPL?" }]
-    }
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "2",
-  "result": {
-    "status": "completed",
-    "message": {
-      "role": "agent",
-      "parts": [{ "type": "text", "text": "AAPL is at $189.30, up $1.20 today.\nBullish — strong iPhone demand and services growth.\nGood Buy — consistent growth with solid fundamentals." }]
-    }
-  }
-}
-```
-
----
-
-### Available cities
-`Bangalore` `Mumbai` `Delhi` `Chennai` `Hyderabad` `Kolkata` `Pune`
-
-### Available stocks
-`AAPL` `TSLA` `GOOGL` `MSFT` `AMZN` `NVDA` `META` `NFLX` `RELIANCE` `TCS` `INFY`
+| Cities | Stocks |
+|---|---|
+| Bangalore, Mumbai, Delhi, Chennai, Hyderabad, Kolkata, Pune | AAPL, TSLA, GOOGL, MSFT, AMZN, NVDA, META, NFLX, RELIANCE, TCS, INFY |
 
 ---
 
 ## 10. Endpoints Reference
 
-| Method | URL | What it does |
+Each agent exposes the same A2A surface:
+
+| Method | URL | Description |
 |---|---|---|
-| GET | `/.well-known/agent.json` | Agent discovery — returns name, skills, capabilities |
-| GET | `/health` | Check if server is running, shows active agents |
-| POST | `/a2a` | Send a message, get a response |
-| GET | `/docs` | Interactive Swagger UI — try endpoints in browser |
+| `GET` | `/.well-known/agent-card.json` | Agent discovery — skills, capabilities, transport URLs |
+| `POST` | `/` | A2A JSON-RPC endpoint (`SendMessage`, `GetTask`, etc.) |
+| `GET` | `/docs` | FastAPI Swagger UI |
+
+### Agent URLs
+
+| Agent | Base URL | Agent Card |
+|---|---|---|
+| Weather | http://localhost:8001 | http://localhost:8001/.well-known/agent-card.json |
+| Stock | http://localhost:8002 | http://localhost:8002/.well-known/agent-card.json |
+
+---
+
+## Learn More
+
+- [A2A Protocol Specification](https://google.github.io/A2A/)
+- [A2A Python SDK (`a2a-sdk`)](https://pypi.org/project/a2a-sdk/)
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
