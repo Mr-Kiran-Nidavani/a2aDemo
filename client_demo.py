@@ -1,10 +1,10 @@
 """
 A2A Protocol Client Demo
 
-Demonstrates true A2A client flow (no orchestrator):
-  1. Discovers remote agent cards  (/.well-known/agent-card.json)
+Demonstrates true A2A client flow:
+  1. Discovers remote agent cards  (A2ACardResolver → /.well-known/agent-card.json)
   2. Matches query against skill tags on each card
-  3. Sends message directly to the matched agent via A2A SDK Client
+  3. Sends message directly to the matched agent via A2A SDK create_client
   4. Prints the response
 
 Usage:
@@ -15,41 +15,42 @@ import asyncio
 
 import httpx
 
-from a2a.client.client_factory import ClientConfig, ClientFactory
+from a2a.client import A2ACardResolver, ClientConfig, create_client
+from a2a.helpers import get_stream_response_text
+from a2a.types import SendMessageRequest
 
 from clientAgent.discovery import (
-    card_name,
     discover_all_cards,
     discover_and_match,
+    match_skill,
     skill_name,
-    skill_to_agent,
 )
-from clientAgent.runner import _build_request, _extract_text
+from clientAgent.runner import _build_request
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def send_to_agent(text: str, card, http_client: httpx.AsyncClient) -> str:
-    """Send a message directly to a remote agent using the A2A SDK Client."""
-    factory = ClientFactory(ClientConfig(httpx_client=http_client, streaming=False))
-    client = factory.create(card)
-    request = _build_request(text)
+    """Send a message directly to a remote agent using the official A2A create_client."""
+    config = ClientConfig(httpx_client=http_client, streaming=False)
+    client = await create_client(agent=card, client_config=config)
 
+    request = _build_request(text)
     final_text = ""
     async for response in client.send_message(request):
-        t = _extract_text(response)
+        t = get_stream_response_text(response)
         if t:
             final_text = t
     return final_text
 
 
-def show(query: str, matched_skill, base_url: str | None, answer: str):
-    skill_label = skill_name(matched_skill) if matched_skill else "None"
-    agent_name = skill_to_agent(matched_skill) if matched_skill else "—"
+def show(query: str, matched_skill, card, answer: str):
+    s_name = skill_name(matched_skill) if matched_skill else "None — no match"
+    agent  = card.name if card else "—"
+    url    = card.supported_interfaces[0].url if card and card.supported_interfaces else "—"
     print(f"\n  Query         : {query}")
-    print(f"  Skill matched : {skill_label}")
-    print(f"  Agent URL     : {base_url or '—'}")
-    print(f"  Routes to     : {agent_name}")
+    print(f"  Skill matched : {s_name}")
+    print(f"  Agent         : {agent}  ({url})")
     print(f"  Answer        : {answer}")
 
 
@@ -63,24 +64,26 @@ async def main():
     try:
         async with httpx.AsyncClient(timeout=60.0) as http_client:
 
-            # ── STEP 1: Discover all remote agent cards ───────────────────────
-            print(f"\n  STEP 1 — A2A Discovery (remote agents)\n")
+            # ── STEP 1: Discover all remote agent cards via A2ACardResolver ───
+            print("\n  STEP 1 — A2A Discovery")
+            print("  A2ACardResolver fetches /.well-known/agent-card.json\n")
 
             discovered = await discover_all_cards(http_client)
-            for base_url, card_dict in discovered:
-                print(f"  GET {base_url}/.well-known/agent-card.json")
-                print(f"  Agent   : {card_dict.get('name', '?')}")
-                print(f"  About   : {card_dict.get('description', '')[:80]}...")
+
+            for base_url, card in discovered:
+                print(f"  Agent   : {card.name}  ({base_url})")
+                print(f"  About   : {card.description[:80]}...")
                 print(f"  Skills  :")
-                for s in card_dict.get("skills", []):
-                    print(f"    [{s['id']}]  {s['name']}")
-                    print(f"      Tags : {', '.join(s['tags'][:6])}...")
+                for skill in card.skills:
+                    tags_preview = ", ".join(skill.tags[:5])
+                    print(f"    [{skill.id}]  {skill.name}")
+                    print(f"      Tags    : {tags_preview}...")
+                    print(f"      Examples: {skill.examples[0] if skill.examples else '—'}")
                 print()
 
-            # ── STEP 2: Skill match + direct send per query ───────────────────
+            # ── STEP 2: Skill match + direct A2A send per query ───────────────
             print("-" * 64)
-            print("  STEP 2 — Skill Matching + Direct A2A Message Send")
-            print("  (client matches tags, calls the right remote agent)\n")
+            print("  STEP 2 — Skill Tag Matching + A2A Message Send\n")
 
             queries = [
                 "What is the weather in Bangalore?",
@@ -92,23 +95,17 @@ async def main():
             ]
 
             for query in queries:
-                print(f"\n  {'-' * 60}")
+                print(f"\n  {'─' * 60}")
                 matched, card, base_url = await discover_and_match(query, http_client)
 
                 if matched:
-                    print(
-                        f"  Card match: '{skill_name(matched)}' on "
-                        f"{card_name(card)}  ->  sending via A2A SDK"
-                    )
+                    print(f"  Tag match : '{skill_name(matched)}'  →  {card.name} ({base_url})")
                     answer = await send_to_agent(query, card, http_client)
                 else:
-                    print("  No skill match on any remote agent card")
-                    answer = (
-                        "I could not find a suitable agent for your request. "
-                        "Try asking about weather in a city or a stock analysis."
-                    )
+                    print("  No skill tag matched any remote agent card")
+                    answer = "No suitable agent found. Try a weather or stock query."
 
-                show(query, matched, base_url, answer)
+                show(query, matched, card, answer)
                 await asyncio.sleep(0.5)
 
         print("\n" + "=" * 64)

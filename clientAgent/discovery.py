@@ -1,92 +1,74 @@
 """
-A2A Discovery — agent card skill matching and remote agent resolution.
+A2A Discovery — agent card resolution and skill matching.
 
-True A2A client behaviour (no orchestrator in the middle):
-  1. Client fetches /.well-known/agent-card.json from each known remote agent
-  2. Reads the skills list on each card
-  3. Matches the user query against each skill's tags
-  4. Sends the message directly to the matched agent's JSON-RPC endpoint
+Official A2A discovery pattern (Well-Known URI strategy):
+  1. Client knows remote agent base URLs (config / env vars)
+  2. A2ACardResolver fetches /.well-known/agent-card.json from each
+  3. Client reads AgentSkill.tags from each card
+  4. Matches the user query against tags (case-insensitive)
+  5. Routes to the matched agent's URL from AgentCard.supported_interfaces
+
+No hardcoded skill→URL mappings — the agent card itself is the source of truth.
 """
 import httpx
+from a2a.client import A2ACardResolver
 
-from a2a.client.card_resolver import A2ACardResolver
-
-# Known remote agents in this demo (in production: registry, DNS, or agent directory)
+# Known remote agent base URLs.
+# In production these come from a registry, DNS, or environment config.
 REMOTE_AGENT_URLS = [
     "http://localhost:8001",  # Weather Agent
     "http://localhost:8002",  # Stock Agent
 ]
 
 
+# ── Skill matching ────────────────────────────────────────────────────────────
+
 def match_skill(query: str, card) -> object | None:
     """
-    Matches a user query against the skills in an agent card.
+    Matches a user query against the skill tags on an AgentCard.
 
-    Reads the 'tags' list of each skill and checks if any tag
-    appears in the query (case-insensitive). Returns the first
-    matching skill object (or dict), or None if no match found.
-
-    Works with both AgentCard SDK objects and plain dicts.
+    Iterates over card.skills, checks each skill's tags list.
+    Returns the first AgentSkill whose tag appears in the query, or None.
     """
     query_lower = query.lower()
-
-    if hasattr(card, "skills"):
-        skills = card.skills or []
-    else:
-        skills = card.get("skills", [])
-
-    for skill in skills:
-        if hasattr(skill, "tags"):
-            tags = skill.tags or []
-        else:
-            tags = skill.get("tags", [])
-
-        for tag in tags:
+    for skill in (card.skills or []):
+        for tag in (skill.tags or []):
             if tag.lower() in query_lower:
                 return skill
-
     return None
 
 
+# ── Convenience accessors ─────────────────────────────────────────────────────
+
 def skill_name(skill) -> str:
-    if skill is None:
-        return "Unknown"
-    return skill.name if hasattr(skill, "name") else skill.get("name", "Unknown")
+    return skill.name if skill else "Unknown"
 
 
 def skill_id(skill) -> str:
-    if skill is None:
-        return ""
-    return skill.id if hasattr(skill, "id") else skill.get("id", "")
+    return skill.id if skill else ""
 
 
 def card_name(card) -> str:
-    if card is None:
-        return "Unknown"
-    return card.name if hasattr(card, "name") else card.get("name", "Unknown")
+    return card.name if card else "Unknown"
 
 
-async def fetch_card_dict(base_url: str) -> dict:
-    """
-    Fetches the agent card from /.well-known/agent-card.json as a plain dict.
+def card_url(card) -> str:
+    """Returns the first interface URL from the agent card — no hardcoding needed."""
+    if card and card.supported_interfaces:
+        return card.supported_interfaces[0].url
+    return ""
 
-    NOTE: This is NOT the recommended A2A discovery approach.
-    The official way is A2ACardResolver (see discover_and_match below).
-    This helper is kept only for display formatting in the tracer UI.
-    """
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(f"{base_url}/.well-known/agent-card.json")
-        response.raise_for_status()
-        return response.json()
 
+# ── Discovery functions ───────────────────────────────────────────────────────
 
 async def discover_all_cards(
     http_client: httpx.AsyncClient,
 ) -> list[tuple[str, object]]:
     """
-    Fetches agent cards from all known remote agents using A2ACardResolver.
-    This is the correct A2A discovery pattern — uses the SDK resolver,
-    not raw HTTP fetches.
+    Fetches AgentCards from all known remote agents using A2ACardResolver.
+
+    This is the official A2A Well-Known URI discovery:
+      GET {base_url}/.well-known/agent-card.json
 
     Returns:
         List of (base_url, AgentCard) for reachable agents.
@@ -107,10 +89,11 @@ async def discover_and_match(
     http_client: httpx.AsyncClient,
 ) -> tuple[object | None, object | None, str | None]:
     """
-    Discovers remote agents and returns the first card whose skills match the query.
+    Iterates over known remote agents, fetches their AgentCards via
+    A2ACardResolver, and returns the first card whose skill tags match the query.
 
     Returns:
-        (matched_skill, agent_card, base_url) or (None, None, None)
+        (matched_skill, AgentCard, base_url)  or  (None, None, None)
     """
     for base_url in REMOTE_AGENT_URLS:
         try:
@@ -121,26 +104,4 @@ async def discover_and_match(
                 return skill, card, base_url
         except Exception:
             continue
-
     return None, None, None
-
-
-# Backward-compatible alias (kept for client_demo.py display only)
-fetch_card = fetch_card_dict
-
-def skill_to_agent_url(skill) -> str:
-    skill_id_val = skill_id(skill)
-    mapping = {
-        "weather_lookup": "http://localhost:8001",
-        "stock_analysis": "http://localhost:8002",
-    }
-    return mapping.get(skill_id_val, REMOTE_AGENT_URLS[0])
-
-
-def skill_to_agent(skill) -> str:
-    skill_id_val = skill_id(skill)
-    mapping = {
-        "weather_lookup": "weather_agent",
-        "stock_analysis": "stock_agent",
-    }
-    return mapping.get(skill_id_val, "unknown")

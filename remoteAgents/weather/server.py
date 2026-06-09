@@ -8,10 +8,9 @@ and send tasks via the JSON-RPC endpoint.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 from a2a.server.events.in_memory_queue_manager import InMemoryQueueManager
-from a2a.server.request_handlers.default_request_handler import LegacyRequestHandler
+from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import (
     create_agent_card_routes,
     create_jsonrpc_routes,
@@ -28,6 +27,9 @@ from remoteAgents.weather.agent_executor import WeatherAgentExecutor
 
 
 # ── Agent Card ────────────────────────────────────────────────────────────────
+# Each remote agent declares its identity and skills here.
+# This is the A2A "registration" — served at /.well-known/agent-card.json
+# so any client can discover what this agent can do.
 
 agent_card = AgentCard(
     name="Weather Agent",
@@ -37,17 +39,13 @@ agent_card = AgentCard(
         "Bangalore, Mumbai, Delhi, Chennai, Hyderabad, Kolkata, or Pune."
     ),
     version="1.0.0",
-    capabilities=AgentCapabilities(
-        streaming=False,
-        push_notifications=False,
-    ),
-    default_input_modes=["text"],
-    default_output_modes=["text"],
+    capabilities=AgentCapabilities(streaming=False),
+    default_input_modes=["text/plain"],
+    default_output_modes=["text/plain"],
     supported_interfaces=[
         AgentInterface(
             url="http://localhost:8001",
             protocol_binding="JSONRPC",
-            protocol_version="1.0",
         )
     ],
     skills=[
@@ -65,25 +63,24 @@ agent_card = AgentCard(
                 "How is the weather in Mumbai?",
                 "Is it raining in Delhi?",
             ],
-            input_modes=["text"],
-            output_modes=["text"],
+            input_modes=["text/plain"],
+            output_modes=["text/plain"],
         )
     ],
 )
 
 # ── A2A Handler & Routes ──────────────────────────────────────────────────────
+# DefaultRequestHandler wires the AgentExecutor into the A2A request lifecycle.
+# It handles task creation, status updates, and event routing.
 
-task_store = InMemoryTaskStore()
-queue_manager = InMemoryQueueManager()
-executor = WeatherAgentExecutor()
-
-handler = LegacyRequestHandler(
-    agent_executor=executor,
-    task_store=task_store,
+handler = DefaultRequestHandler(
+    agent_executor=WeatherAgentExecutor(),
+    task_store=InMemoryTaskStore(),
     agent_card=agent_card,
-    queue_manager=queue_manager,
 )
 
+# create_agent_card_routes → exposes GET /.well-known/agent-card.json
+# create_jsonrpc_routes    → exposes POST / for A2A JSON-RPC calls
 agent_card_routes = create_agent_card_routes(agent_card)
 jsonrpc_routes = create_jsonrpc_routes(handler, rpc_url="/")
 
@@ -95,15 +92,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-add_a2a_routes_to_fastapi(
-    app,
-    agent_card_routes=agent_card_routes,
-    jsonrpc_routes=jsonrpc_routes,
-)
+add_a2a_routes_to_fastapi(app, agent_card_routes=agent_card_routes, jsonrpc_routes=jsonrpc_routes)

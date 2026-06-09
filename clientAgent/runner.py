@@ -1,67 +1,62 @@
 """
 A2A Runner — client-side discovery and direct remote agent calls.
 
-Responsible for:
-  1. Discovering remote agent cards (ports 8001, 8002)
-  2. Matching the user query to a skill via discovery.py
-  3. Sending a SendMessageRequest directly to the matched agent
-  4. Returning the final text response
-
-No orchestrator — the client performs A2A discovery and routing.
-For the traced version used by the Streamlit UI, see tracer.py.
+Uses the official A2A SDK pattern:
+  - A2ACardResolver     → discovers agent cards from /.well-known/agent-card.json
+  - create_client       → builds a Client from an AgentCard
+  - get_stream_response_text → extracts text from StreamResponse
 """
 from uuid import uuid4
 
 import httpx
 
-from a2a.client.client_factory import ClientConfig, ClientFactory
+from a2a.client import ClientConfig, create_client
+from a2a.helpers import get_stream_response_text, new_text_message
 from a2a.types import (
-    Message,
-    Part,
     Role,
     SendMessageConfiguration,
     SendMessageRequest,
-    StreamResponse,
 )
 
 from clientAgent.discovery import discover_and_match
 
 
 def _build_request(user_message: str, context_id: str | None = None) -> SendMessageRequest:
+    """Builds a standard A2A SendMessageRequest using new_text_message helper (official SDK pattern)."""
+    from uuid import uuid4
+    msg = new_text_message(user_message, role=Role.ROLE_USER)
+    msg.message_id = uuid4().hex
+    msg.context_id = context_id or uuid4().hex
     return SendMessageRequest(
-        message=Message(
-            message_id=uuid4().hex,
-            context_id=context_id or uuid4().hex,
-            role=Role.ROLE_USER,
-            parts=[Part(text=user_message)],
-        ),
+        message=msg,
         configuration=SendMessageConfiguration(),
     )
 
 
 async def run_agent(user_message: str) -> str:
     """
-    Discovers remote agents, matches skills, and sends the message directly
-    to the appropriate specialist agent via the A2A SDK Client.
+    Discovers remote agents by fetching their agent cards,
+    matches the query to a skill, and sends the message directly
+    to the matched agent via create_client.
+
+    Used by simple UI mode (trace OFF).
     """
     async with httpx.AsyncClient(timeout=60.0) as http_client:
-        matched_skill, card, base_url = await discover_and_match(
-            user_message, http_client
-        )
+        _, card, base_url = await discover_and_match(user_message, http_client)
 
-        if card is None or base_url is None:
+        if card is None:
             return (
-                "I could not find a suitable agent for your request. "
+                "I could not find a suitable agent. "
                 "Try asking about weather in a city or a stock analysis."
             )
 
-        factory = ClientFactory(ClientConfig(httpx_client=http_client, streaming=False))
-        client = factory.create(card)
+        config = ClientConfig(httpx_client=http_client, streaming=False)
+        client = await create_client(agent=card, client_config=config)
         request = _build_request(user_message)
 
         final_text = ""
         async for response in client.send_message(request):
-            text = _extract_text(response)
+            text = get_stream_response_text(response)
             if text:
                 final_text = text
 
@@ -70,48 +65,18 @@ async def run_agent(user_message: str) -> str:
 
 async def run_agent_iter(user_message: str):
     """
-    Async generator that yields raw StreamResponse objects from the matched
-    remote agent. Used by tracer.py to inspect each event as it arrives.
+    Async generator yielding raw StreamResponse objects from the matched agent.
+    Used by tracer.py to inspect each event as it arrives.
     """
     async with httpx.AsyncClient(timeout=60.0) as http_client:
-        matched_skill, card, base_url = await discover_and_match(
-            user_message, http_client
-        )
+        _, card, _ = await discover_and_match(user_message, http_client)
 
         if card is None:
             return
 
-        factory = ClientFactory(ClientConfig(httpx_client=http_client, streaming=False))
-        client = factory.create(card)
+        config = ClientConfig(httpx_client=http_client, streaming=False)
+        client = await create_client(agent=card, client_config=config)
         request = _build_request(user_message)
 
         async for response in client.send_message(request):
             yield response
-
-
-def _extract_text(response: StreamResponse) -> str:
-    """Extracts text content from a StreamResponse (A2A SDK protobuf)."""
-    try:
-        if hasattr(response, "task") and response.task:
-            task = response.task
-            if task.status and task.status.message and task.status.message.parts:
-                return task.status.message.parts[0].text or ""
-
-        if hasattr(response, "result"):
-            result = response.result
-            if hasattr(result, "status") and hasattr(result.status, "message"):
-                msg = result.status.message
-                if msg and msg.parts:
-                    return msg.parts[0].text or ""
-            if hasattr(result, "artifact"):
-                artifact = result.artifact
-                if artifact and artifact.parts:
-                    return artifact.parts[0].text or ""
-
-        if hasattr(response, "message"):
-            msg = response.message
-            if msg and msg.parts:
-                return msg.parts[0].text or ""
-    except Exception:
-        pass
-    return ""

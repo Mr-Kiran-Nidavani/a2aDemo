@@ -9,8 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
-from a2a.server.events.in_memory_queue_manager import InMemoryQueueManager
-from a2a.server.request_handlers.default_request_handler import LegacyRequestHandler
+from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import (
     create_agent_card_routes,
     create_jsonrpc_routes,
@@ -27,6 +26,8 @@ from remoteAgents.stock.agent_executor import StockAgentExecutor
 
 
 # ── Agent Card ────────────────────────────────────────────────────────────────
+# Served at /.well-known/agent-card.json — this is how clients discover
+# what this agent can do (A2A Well-Known URI discovery).
 
 agent_card = AgentCard(
     name="Stock Agent",
@@ -36,17 +37,13 @@ agent_card = AgentCard(
         "RELIANCE, TCS, and INFY."
     ),
     version="1.0.0",
-    capabilities=AgentCapabilities(
-        streaming=False,
-        push_notifications=False,
-    ),
-    default_input_modes=["text"],
-    default_output_modes=["text"],
+    capabilities=AgentCapabilities(streaming=False),
+    default_input_modes=["text/plain"],
+    default_output_modes=["text/plain"],
     supported_interfaces=[
         AgentInterface(
             url="http://localhost:8002",
             protocol_binding="JSONRPC",
-            protocol_version="1.0",
         )
     ],
     skills=[
@@ -64,23 +61,18 @@ agent_card = AgentCard(
                 "Should I buy TSLA?",
                 "How is NVDA doing?",
             ],
-            input_modes=["text"],
-            output_modes=["text"],
+            input_modes=["text/plain"],
+            output_modes=["text/plain"],
         )
     ],
 )
 
 # ── A2A Handler & Routes ──────────────────────────────────────────────────────
 
-task_store = InMemoryTaskStore()
-queue_manager = InMemoryQueueManager()
-executor = StockAgentExecutor()
-
-handler = LegacyRequestHandler(
-    agent_executor=executor,
-    task_store=task_store,
+handler = DefaultRequestHandler(
+    agent_executor=StockAgentExecutor(),
+    task_store=InMemoryTaskStore(),
     agent_card=agent_card,
-    queue_manager=queue_manager,
 )
 
 agent_card_routes = create_agent_card_routes(agent_card)
@@ -94,15 +86,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-add_a2a_routes_to_fastapi(
-    app,
-    agent_card_routes=agent_card_routes,
-    jsonrpc_routes=jsonrpc_routes,
-)
+add_a2a_routes_to_fastapi(app, agent_card_routes=agent_card_routes, jsonrpc_routes=jsonrpc_routes)
