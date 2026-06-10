@@ -6,7 +6,7 @@ Official A2A discovery pattern (Well-Known URI strategy):
   2. A2ACardResolver fetches /.well-known/agent-card.json from each
   3. Client reads AgentSkill.tags from each card
   4. Matches the user query against tags (case-insensitive)
-  5. Routes to the matched agent's URL from AgentCard.supported_interfaces
+  5. Routes to the matched agent's URL from AgentCard.url
 
 No hardcoded skill→URL mappings — the agent card itself is the source of truth.
 """
@@ -53,10 +53,8 @@ def card_name(card) -> str:
 
 
 def card_url(card) -> str:
-    """Returns the first interface URL from the agent card — no hardcoding needed."""
-    if card and card.supported_interfaces:
-        return card.supported_interfaces[0].url
-    return ""
+    """Returns the agent's endpoint URL from the agent card."""
+    return card.url if card else ""
 
 
 # ── Discovery functions ───────────────────────────────────────────────────────

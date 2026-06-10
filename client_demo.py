@@ -15,30 +15,28 @@ import asyncio
 
 import httpx
 
-from a2a.client import A2ACardResolver, ClientConfig, create_client
-from a2a.helpers import get_stream_response_text
-from a2a.types import SendMessageRequest
+from a2a.client import ClientConfig, ClientFactory
+from a2a.client.helpers import create_text_message_object
 
 from clientAgent.discovery import (
     discover_all_cards,
     discover_and_match,
-    match_skill,
     skill_name,
 )
-from clientAgent.runner import _build_request
+from clientAgent.runner import _build_message, _extract_text_from_event
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def send_to_agent(text: str, card, http_client: httpx.AsyncClient) -> str:
-    """Send a message directly to a remote agent using the official A2A create_client."""
+    """Send a message directly to a remote agent using ClientFactory."""
     config = ClientConfig(httpx_client=http_client, streaming=False)
-    client = await create_client(agent=card, client_config=config)
+    client = ClientFactory(config).create(card)
 
-    request = _build_request(text)
+    message = _build_message(text)
     final_text = ""
-    async for response in client.send_message(request):
-        t = get_stream_response_text(response)
+    async for event in client.send_message(message):
+        t = _extract_text_from_event(event)
         if t:
             final_text = t
     return final_text
@@ -47,7 +45,7 @@ async def send_to_agent(text: str, card, http_client: httpx.AsyncClient) -> str:
 def show(query: str, matched_skill, card, answer: str):
     s_name = skill_name(matched_skill) if matched_skill else "None — no match"
     agent  = card.name if card else "—"
-    url    = card.supported_interfaces[0].url if card and card.supported_interfaces else "—"
+    url    = card.url if card else "—"
     print(f"\n  Query         : {query}")
     print(f"  Skill matched : {s_name}")
     print(f"  Agent         : {agent}  ({url})")

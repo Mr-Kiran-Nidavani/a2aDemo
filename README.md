@@ -1,6 +1,13 @@
 # A2A Protocol Demo — Weather + Stock Agents
 
-A complete implementation of the [Agent2Agent (A2A) Protocol](https://a2a-protocol.org) using the official Python SDK (`a2a-sdk`). Two independent remote agents each declare their own skills. A client discovers them at runtime, matches the user query to the right skill, and routes directly — no orchestrator, no hardcoded routing.
+A complete implementation of the [Agent2Agent (A2A) Protocol](https://a2a-protocol.org) using the official Python SDK (`a2a-sdk`). Two independent remote agents each declare their own skills via an Agent Card. A client discovers them at runtime, matches the user query to the right skill, and routes directly — **no orchestrator, no hardcoded routing**.
+
+The key point of this demo: **each agent is built with a different AI framework**, but they all speak the same A2A protocol. The client doesn't know or care which framework powers each agent.
+
+| Agent | Framework | LLM | Port |
+|---|---|---|---|
+| Weather Agent | **Google ADK** + `to_a2a()` | GPT-3.5 via LiteLLM | 8001 |
+| Stock Agent | **LangChain** + manual A2A bridge | GPT-3.5 via ChatOpenAI | 8002 |
 
 ---
 
@@ -8,20 +15,21 @@ A complete implementation of the [Agent2Agent (A2A) Protocol](https://a2a-protoc
 
 1. [What is A2A?](#1-what-is-a2a)
 2. [Project Overview](#2-project-overview)
-3. [Installation](#3-installation)
-4. [How to Run](#4-how-to-run)
-5. [How Remote Agents Define Their Skills](#5-how-remote-agents-define-their-skills)
-6. [How the Client Discovers Remote Agents](#6-how-the-client-discovers-remote-agents)
-7. [How a User Request is Served — End to End](#7-how-a-user-request-is-served--end-to-end)
-8. [Project Structure](#8-project-structure)
-9. [Sample Requests and Responses](#9-sample-requests-and-responses)
-10. [Endpoints Reference](#10-endpoints-reference)
+3. [How Different Frameworks Integrate with A2A](#3-how-different-frameworks-integrate-with-a2a)
+4. [Installation](#4-installation)
+5. [How to Run](#5-how-to-run)
+6. [File-Level Explanation](#6-file-level-explanation)
+7. [How the Client Discovers Remote Agents](#7-how-the-client-discovers-remote-agents)
+8. [How a User Request is Served — End to End](#8-how-a-user-request-is-served--end-to-end)
+9. [Project Structure](#9-project-structure)
+10. [Sample Requests and Responses](#10-sample-requests-and-responses)
+11. [Endpoints Reference](#11-endpoints-reference)
 
 ---
 
 ## 1. What is A2A?
 
-**A2A (Agent-to-Agent)** is an open standard (donated to the Linux Foundation by Google) that lets AI agents discover each other and communicate over HTTP using JSON-RPC 2.0.
+**A2A (Agent-to-Agent)** is an open standard that lets AI agents discover each other and communicate over HTTP using JSON-RPC 2.0.
 
 | Protocol | Used for |
 |---|---|
@@ -29,238 +37,486 @@ A complete implementation of the [Agent2Agent (A2A) Protocol](https://a2a-protoc
 | MCP | AI models talking to tools |
 | **A2A** | **AI agents talking to other AI agents** |
 
-The key ideas:
-- Each agent publishes a machine-readable **Agent Card** describing its skills
-- Clients discover agents by fetching that card from `/.well-known/agent-card.json`
-- Communication happens over JSON-RPC — standard, framework-agnostic
+Key ideas:
+- Each agent publishes a machine-readable **Agent Card** at `/.well-known/agent-card.json`
+- Clients discover agents by fetching that card and reading its skill tags
+- Communication is JSON-RPC over HTTP — framework-agnostic
+- **Any agent framework can participate** as long as it exposes an A2A-compliant endpoint
 
 ---
 
 ## 2. Project Overview
 
-Two independent A2A servers and one client:
-
 ```
 ┌─────────────────────────────────────────────────────┐
 │  client_demo.py  /  ui.py  (A2A Client)             │
 │                                                     │
-│  1. Fetches agent cards from port 8001 and 8002     │
-│  2. Reads skill tags from each card                 │
-│  3. Matches user query → picks the right agent      │
-│  4. Sends message directly to that agent            │
+│  1. Fetch agent cards from port 8001 and 8002       │
+│  2. Match user query against skill tags             │
+│  3. Send message directly to the matched agent      │
 └────────────────────┬────────────────────────────────┘
-                     │ A2A JSON-RPC
+                     │ A2A JSON-RPC (POST /)
           ┌──────────┴──────────┐
           ▼                     ▼
-┌─────────────────┐   ┌─────────────────┐
-│  Weather Agent  │   │  Stock Agent    │
-│  port 8001      │   │  port 8002      │
-│                 │   │                 │
-│  Skill:         │   │  Skill:         │
-│  weather_lookup │   │  stock_analysis │
-│  tags: weather, │   │  tags: stock,   │
-│  rain, cloudy.. │   │  aapl, tsla...  │
-└─────────────────┘   └─────────────────┘
+┌──────────────────────┐  ┌──────────────────────────┐
+│  Weather Agent       │  │  Stock Agent             │
+│  port 8001           │  │  port 8002               │
+│                      │  │                          │
+│  Framework: ADK      │  │  Framework: LangChain    │
+│  to_a2a() auto-wires │  │  Manual A2A bridge       │
+│  A2A protocol        │  │  AgentExecutor subclass  │
+│                      │  │                          │
+│  tags: weather,      │  │  tags: stock, aapl,      │
+│  rain, cloudy...     │  │  tsla, nvda...           │
+└──────────────────────┘  └──────────────────────────┘
 ```
-
-There is **no orchestrator**. The client itself does discovery and routing — this is exactly how the A2A protocol is designed to work.
 
 ---
 
-## 3. Installation
+## 3. How Different Frameworks Integrate with A2A
 
-**Step 1 — Install uv** (fast Python package manager):
+This is the core learning of this demo. A2A is a **protocol**, not a framework. Any agent — regardless of how it's built — can participate by exposing A2A-compliant HTTP endpoints. There are two integration approaches shown here.
+
+---
+
+### Approach 1 — Google ADK: `to_a2a()` (Weather Agent)
+
+Google ADK has first-class A2A support. The `to_a2a()` function wraps any ADK `Agent` and automatically:
+- Creates an `A2aAgentExecutor` that bridges A2A ↔ ADK runner
+- Sets up in-memory task, session, and artifact stores
+- Mounts all A2A routes including `/.well-known/agent-card.json`
+- Returns a Starlette ASGI app ready for uvicorn
+
+**Step 1 — Define the ADK agent** (`remoteAgents/weather/agent.py`):
+```python
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+
+root_agent = Agent(
+    model=LiteLlm(model="openai/gpt-3.5-turbo", api_key=os.getenv("OPENAI_API_KEY")),
+    name="weather_agent",
+    instruction="You are a helpful weather assistant...",
+    tools=[get_weather],   # plain Python function — ADK wraps it as a tool
+)
+```
+
+**Step 2 — Expose via A2A** (`remoteAgents/weather/server.py`):
+```python
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
+from a2a.types import AgentCard, AgentSkill, AgentCapabilities
+
+agent_card = AgentCard(
+    name="Weather Agent",
+    url="http://localhost:8001",
+    preferred_transport="JSONRPC",
+    capabilities=AgentCapabilities(streaming=False),
+    default_input_modes=["text/plain"],
+    default_output_modes=["text/plain"],
+    skills=[
+        AgentSkill(
+            id="weather_lookup",
+            name="Weather Lookup",
+            tags=["weather", "temperature", "rain", "cloudy", "wind", ...],
+            ...
+        )
+    ],
+    ...
+)
+
+# One line — entire A2A server is ready
+app = to_a2a(root_agent, port=8001, agent_card=agent_card)
+```
+
+That's it. ADK handles everything — the agent card endpoint, JSON-RPC dispatcher, task lifecycle, and tool execution loop.
+
+---
+
+### Approach 2 — LangChain: Manual A2A Bridge (Stock Agent)
+
+For frameworks without built-in A2A support, you implement the A2A `AgentExecutor` interface and manually manage the task lifecycle. The framework does the LLM work; your bridge code translates it into A2A events.
+
+**The A2A task lifecycle** (your bridge must implement this):
+```
+1. new_task(message)             → create A2A Task, enqueue it
+2. update_status(working)        → tell client "I'm processing"
+3. [your framework does its work]
+4. add_artifact(result_text)     → attach the answer
+5. update_status(completed)      → signal done
+```
+
+**Step 1 — Define the LangChain tool and model** (`remoteAgents/stock/agent_executor.py`):
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+
+@tool
+def get_stock(symbol: str) -> str:
+    """Returns stock price, sentiment and note for a ticker."""
+    ...
+
+# Two LLM instances: one with tools (for tool selection), one plain (for formatting)
+_llm_with_tools = ChatOpenAI(model="gpt-3.5-turbo", ...).bind_tools([get_stock])
+_llm = ChatOpenAI(model="gpt-3.5-turbo", ...)
+```
+
+**Step 2 — Implement the A2A bridge** (`remoteAgents/stock/agent_executor.py`):
+```python
+from a2a.server.agent_execution.agent_executor import AgentExecutor
+
+class StockAgentExecutor(AgentExecutor):
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        # A2A task lifecycle — mandatory
+        task = context.current_task or new_task(context.message)
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        await updater.update_status(TaskState.working, ...)
+
+        # LangChain does the work
+        response = await _llm_with_tools.ainvoke([HumanMessage(content=user_text)])
+        if response.tool_calls:
+            tool_result = get_stock.invoke(response.tool_calls[0]["args"])
+            final = await _llm.ainvoke([HumanMessage(content=f"Format: {tool_result}")])
+            result_text = final.content
+        else:
+            result_text = response.content
+
+        # Return result via A2A artifact
+        await updater.add_artifact(parts=[Part(root=TextPart(text=result_text))], ...)
+        await updater.update_status(TaskState.completed, ...)
+```
+
+**Step 3 — Wire to FastAPI** (`remoteAgents/stock/server.py`):
+```python
+from a2a.server.apps import A2AFastAPIApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
+
+handler = DefaultRequestHandler(
+    agent_executor=StockAgentExecutor(),
+    task_store=InMemoryTaskStore(),
+)
+
+app = FastAPI(...)
+A2AFastAPIApplication(agent_card=agent_card, http_handler=handler).add_routes_to_app(app)
+```
+
+---
+
+### Framework comparison
+
+| | Google ADK | LangChain (or any other framework) |
+|---|---|---|
+| **A2A wiring** | `to_a2a()` — one line | Manual `AgentExecutor` subclass |
+| **Task lifecycle** | Handled automatically | You implement 5 steps |
+| **Tool integration** | Pass function directly to `Agent(tools=[...])` | `@tool` decorator + `bind_tools()` |
+| **Server type** | Starlette (via `to_a2a`) | FastAPI (your choice) |
+| **Agent card** | Auto-generated or custom | You define it manually |
+| **Effort** | Minimal | ~60 lines of bridge code |
+
+---
+
+## 4. Installation
+
 ```bash
+# Install uv (fast Python package manager)
 pip install uv
-```
 
-**Step 2 — Create virtual environment:**
-```bash
+# Create venv and install all dependencies
 uv venv
+uv sync
+
+# Activate
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # Mac / Linux
 ```
 
-**Step 3 — Activate:**
-```bash
-# Windows
-.venv\Scripts\activate
-
-# Mac / Linux
-source .venv/bin/activate
-```
-
-**Step 4 — Install dependencies:**
-```bash
-uv pip install -r requirements.txt
-```
-
-**Step 5 — Set your API key** in `.env`:
+Set your API key in `.env`:
 ```
 OPENAI_API_KEY=sk-your-key-here
 ```
 
 ---
 
-## 4. How to Run
+## 5. How to Run
 
 ### Option A — Streamlit UI (recommended)
 
-Shows each A2A step live as the request flows through the system.
-
-> **Both commands are required in separate terminals.**
-> The UI only provides the chat interface — the agents run separately.
-
 ```bash
-# Terminal 1 — start both remote agents FIRST
+# Terminal 1 — start both agents
 python main.py
 
-# Terminal 2 — then start the UI
+# Terminal 2 — start the UI
 streamlit run ui.py
 ```
 
-Opens at **http://localhost:8501**
+Opens at **http://localhost:8501**. Use the **"Show request trace"** toggle to see the full A2A flow live.
 
-Use the **"Show request trace"** toggle in the sidebar:
-- **ON** — live trace showing discovery, skill matching, tool call, response
-- **OFF** — simple chat, no trace overhead
-
----
-
-### Option B — CLI Client
+### Option B — CLI
 
 ```bash
-# Terminal 1
-python main.py
-
-# Terminal 2
-python client_demo.py
+python main.py        # Terminal 1
+python client_demo.py # Terminal 2
 ```
 
-The CLI client will:
-1. Fetch agent cards from both agents (Step 1 — Discovery)
-2. Print each agent's name, skills, and example queries
-3. Run 6 sample queries — matching each to the right agent automatically
-4. Print the routing decision and response for each query
+### Troubleshooting — port in use
 
----
-
-### Troubleshooting — Port already in use
-
-If you see `[Errno 10048] error while attempting to bind on address` when running `main.py`, a previous server process is still holding the port.
-
-**Find and kill it (Windows):**
 ```bash
-# Find the process ID (PID) on port 8001
 netstat -ano | findstr ":8001"
-
-# Kill it (replace 12568 with your actual PID)
-taskkill /PID 12568 /F
+taskkill /PID <PID> /F
 ```
-
-Repeat for port 8002 if needed. Then run `python main.py` again.
 
 ---
 
-### Option C — Swagger UI (manual testing)
-
-```bash
-python main.py
-```
-
-Then open:
-- `http://localhost:8001/docs` — Weather Agent
-- `http://localhost:8002/docs` — Stock Agent
-
-Use the `POST /` endpoint with the JSON body from the [Sample Requests](#9-sample-requests-and-responses) section.
+## 6. File-Level Explanation
 
 ---
 
-## 5. How Remote Agents Define Their Skills
+### `main.py` — Starting point of the application
 
-Each remote agent defines an `AgentCard` with one or more `AgentSkill` objects. This is the A2A "self-registration" — the agent tells the world what it can do.
+Starts both remote A2A agent servers concurrently using `asyncio` + `uvicorn`.
 
-### AgentSkill — the unit of capability
-
+#### `SERVERS`
+Stores configuration for each agent (app path, host, port, label):
 ```python
-# remoteAgents/weather/server.py
-AgentSkill(
-    id="weather_lookup",              # unique identifier
-    name="Weather Lookup",            # human-readable label
-    description="Current weather conditions for a city",
-    tags=["weather", "temperature", "rain", "cloudy", "wind", ...],  # ← discovery keys
-    examples=["What is the weather in Bangalore?", "Is it raining in Delhi?"],
-    input_modes=["text/plain"],        # accepted MIME types
-    output_modes=["text/plain"],       # returned MIME types
+SERVERS = [
+    {"app": "remoteAgents.weather.server:app", "host": "0.0.0.0", "port": 8001, "label": "Weather Agent"},
+    {"app": "remoteAgents.stock.server:app",   "host": "0.0.0.0", "port": 8002, "label": "Stock Agent"},
+]
+```
+
+#### `serve(config: dict)`
+Creates and starts a uvicorn server asynchronously:
+```python
+async def serve(config: dict) -> None:
+    cfg = uvicorn.Config(app=config["app"], host=config["host"], port=config["port"], log_level="info")
+    server = uvicorn.Server(cfg)
+    await server.serve()
+```
+
+#### `main()`
+Starts all servers concurrently — neither blocks the other:
+```python
+await asyncio.gather(*[serve(s) for s in SERVERS])
+```
+
+#### Purpose
+Clients discover agents via their agent cards and communicate directly with the appropriate agent based on skill tags — no central orchestrator involved.
+
+---
+
+### `ui.py` — Streamlit chat interface
+
+Streamlit UI that takes user input and calls either:
+- `run_agent_with_trace(message)` — shows live A2A flow steps in a side panel (trace mode ON)
+- `run_agent(message)` — direct call, just returns the answer (trace mode OFF)
+
+Both functions live in `clientAgent/runner.py` and `clientAgent/tracer.py`.
+
+---
+
+### `clientAgent/runner.py` — A2A client logic
+
+Handles discovery, message building, sending, and response extraction.
+
+#### `_build_message()`
+Builds a `Message` object using the SDK helper:
+```python
+from a2a.client.helpers import create_text_message_object
+
+def _build_message(user_message: str, context_id: str | None = None):
+    msg = create_text_message_object(content=user_message)
+    msg.message_id = uuid4().hex
+    msg.context_id = context_id or uuid4().hex
+    return msg
+```
+
+#### `run_agent()`
+Discovers the right agent and sends the message:
+```python
+async with httpx.AsyncClient(timeout=60.0) as http_client:
+    _, card, _ = await discover_and_match(user_message, http_client)
+
+    config = ClientConfig(httpx_client=http_client, streaming=False)
+    client = ClientFactory(config).create(card)
+
+    async for event in client.send_message(message):   # async generator — no await
+        text = _extract_text_from_event(event)
+        if text:
+            final_text = text
+```
+
+- `async with httpx.AsyncClient(...)` — opens an HTTP client, closes it when the block exits
+- `client.send_message(message)` returns an **async generator** directly (not a coroutine) — iterate with `async for`, no `await`
+
+#### `_extract_text_from_event()`
+The new SDK returns `ClientEvent = tuple[Task, UpdateEvent]` or a `Message`. Text is extracted from task artifacts:
+```python
+def _extract_text_from_event(event) -> str:
+    if isinstance(event, tuple):
+        task, update = event
+        if isinstance(update, TaskArtifactUpdateEvent):
+            texts = get_text_parts(update.artifact.parts)
+            if texts:
+                return texts[-1]
+        if isinstance(task, Task) and task.artifacts:
+            for artifact in reversed(task.artifacts):
+                texts = get_text_parts(artifact.parts)
+                if texts:
+                    return texts[-1]
+    elif isinstance(event, Message):
+        texts = get_text_parts(event.parts)
+        if texts:
+            return texts[-1]
+    return ""
+```
+
+---
+
+### `clientAgent/discovery.py` — Agent discovery and skill matching
+
+Responsible for finding the right remote agent for a given user query.
+
+#### `discover_and_match()`
+```python
+async def discover_and_match(query, http_client):
+    for base_url in REMOTE_AGENT_URLS:
+        try:
+            resolver = A2ACardResolver(httpx_client=http_client, base_url=base_url)
+            card = await resolver.get_agent_card()   # GET /.well-known/agent-card.json
+            skill = match_skill(query, card)          # check skill tags
+            if skill is not None:
+                return skill, card, base_url
+        except Exception:
+            continue
+    return None, None, None
+```
+
+- Uses `A2ACardResolver` from `a2a.client` to fetch `/.well-known/agent-card.json`
+- `match_skill()` iterates over `card.skills` and checks if any `skill.tags` appear in the query (case-insensitive)
+- The endpoint URL comes from `card.url` — no hardcoded routing
+
+---
+
+### `remoteAgents/weather/` — Google ADK Agent
+
+#### `agent.py` — ADK agent definition
+```python
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+
+root_agent = Agent(
+    model=LiteLlm(model="openai/gpt-3.5-turbo", api_key=os.getenv("OPENAI_API_KEY")),
+    name="weather_agent",
+    instruction="You are a helpful weather assistant...",
+    tools=[get_weather],   # plain Python function — ADK wraps it automatically
 )
 ```
 
-**`tags` are the discovery keys.** The client matches the user's query against these. If the query contains any tag word, this skill — and its agent — is selected.
-
-### AgentCard — the agent's business card
-
+#### `server.py` — A2A exposure via `to_a2a()`
 ```python
-# remoteAgents/weather/server.py
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
+
 agent_card = AgentCard(
     name="Weather Agent",
-    description="Provides current weather conditions for Indian cities.",
-    version="1.0.0",
-    capabilities=AgentCapabilities(streaming=False),
-    default_input_modes=["text/plain"],
-    default_output_modes=["text/plain"],
-    supported_interfaces=[
-        AgentInterface(
-            url="http://localhost:8001",   # where to send requests
-            protocol_binding="JSONRPC",    # communication protocol
-        )
-    ],
-    skills=[weather_skill],  # list of AgentSkill objects
-)
-```
-
-### How the card is published automatically
-
-`create_agent_card_routes` exposes the card at `/.well-known/agent-card.json` — no extra code needed:
-
-```python
-# remoteAgents/weather/server.py
-handler = DefaultRequestHandler(
-    agent_executor=WeatherAgentExecutor(),
-    task_store=InMemoryTaskStore(),
-    agent_card=agent_card,
+    url="http://localhost:8001",
+    preferred_transport="JSONRPC",
+    skills=[AgentSkill(id="weather_lookup", tags=["weather", "rain", "cloudy", ...], ...)],
+    ...
 )
 
-agent_card_routes = create_agent_card_routes(agent_card)   # ← serves /.well-known/agent-card.json
-jsonrpc_routes    = create_jsonrpc_routes(handler, rpc_url="/")  # ← serves POST /
-
-add_a2a_routes_to_fastapi(app, agent_card_routes=agent_card_routes, jsonrpc_routes=jsonrpc_routes)
+app = to_a2a(root_agent, port=8001, agent_card=agent_card)
+# Returns a Starlette ASGI app — uvicorn runs it directly
 ```
 
-The stock agent follows the exact same pattern on port 8002 with its own skills.
+`to_a2a()` automatically handles the full A2A server setup. No executor, no handler, no route wiring needed.
+
+#### `weather_tool.py` — mock data tool
+Plain Python function that returns weather data for Indian cities. ADK picks it up via `tools=[get_weather]`.
 
 ---
 
-## 6. How the Client Discovers Remote Agents
+### `remoteAgents/stock/` — LangChain Agent
 
-The client uses `A2ACardResolver` — the official A2A SDK class for the Well-Known URI discovery strategy.
+#### `agent_executor.py` — LangChain + A2A bridge
 
-### Step 1 — Fetch each agent's card
+Defines the LangChain tool, model, and the A2A `AgentExecutor` bridge.
 
+**Tool definition:**
 ```python
-# clientAgent/discovery.py
-resolver = A2ACardResolver(
-    httpx_client=http_client,
-    base_url="http://localhost:8001",
-)
-card = await resolver.get_agent_card()
-# Fetches GET http://localhost:8001/.well-known/agent-card.json
-# Returns a typed AgentCard protobuf object
+from langchain_core.tools import tool
+
+@tool
+def get_stock(symbol: str) -> str:
+    """Returns stock price, sentiment and note for a ticker."""
+    d = _get_stock_data(symbol)
+    return f"{d['symbol']}: ${d['price']} | {d['sentiment']} | {d['note']}"
 ```
 
-This is done for every URL in `REMOTE_AGENT_URLS = ["http://localhost:8001", "http://localhost:8002"]`.
-
-### Step 2 — Match query against skill tags
-
+**Two LLM instances** (to avoid tool-binding interfering with the formatting step):
 ```python
-# clientAgent/discovery.py
+_llm_with_tools = ChatOpenAI(model="gpt-3.5-turbo", ...).bind_tools([get_stock])
+_llm = ChatOpenAI(model="gpt-3.5-turbo", ...)   # plain — for final answer formatting
+```
+
+**A2A bridge — the 5-step task lifecycle:**
+```python
+class StockAgentExecutor(AgentExecutor):
+    async def execute(self, context, event_queue):
+        task = context.current_task or new_task(context.message)
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+
+        await updater.update_status(TaskState.working, ...)         # step 2
+
+        response = await _llm_with_tools.ainvoke([...])             # step 3a — tool selection
+        if response.tool_calls:
+            tool_result = get_stock.invoke(response.tool_calls[0]["args"])  # step 3b — tool call
+            final = await _llm.ainvoke([...format prompt...])       # step 3c — format answer
+            result_text = final.content
+
+        await updater.add_artifact(parts=[...result_text...], ...)  # step 4
+        await updater.update_status(TaskState.completed, ...)       # step 5
+```
+
+#### `server.py` — FastAPI + A2AFastAPIApplication
+```python
+from a2a.server.apps import A2AFastAPIApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
+
+agent_card = AgentCard(
+    name="Stock Agent",
+    url="http://localhost:8002",
+    preferred_transport="JSONRPC",
+    skills=[AgentSkill(id="stock_analysis", tags=["stock", "aapl", "tsla", ...], ...)],
+    ...
+)
+
+handler = DefaultRequestHandler(
+    agent_executor=StockAgentExecutor(),
+    task_store=InMemoryTaskStore(),
+)
+
+app = FastAPI(...)
+A2AFastAPIApplication(agent_card=agent_card, http_handler=handler).add_routes_to_app(app)
+# Mounts: POST / (JSON-RPC) + GET /.well-known/agent-card.json
+```
+
+#### `stock_tool.py` — mock data tool
+Plain Python function with mock stock data for AAPL, TSLA, NVDA, etc. Called by the LangChain `@tool`.
+
+---
+
+## 7. How the Client Discovers Remote Agents
+
+**Step 1 — Fetch agent cards**
+
+`A2ACardResolver` fetches `/.well-known/agent-card.json` from each known base URL:
+```python
+resolver = A2ACardResolver(httpx_client=http_client, base_url="http://localhost:8001")
+card = await resolver.get_agent_card()
+```
+
+**Step 2 — Match query against skill tags**
+```python
 def match_skill(query: str, card) -> AgentSkill | None:
     query_lower = query.lower()
     for skill in (card.skills or []):
@@ -270,92 +526,55 @@ def match_skill(query: str, card) -> AgentSkill | None:
     return None
 ```
 
-Example: query `"weather in Bangalore"` → tag `"weather"` found in WeatherAgent's skills → WeatherAgent selected.
+Example: `"weather in Mumbai"` → tag `"weather"` found in Weather Agent's skills → Weather Agent selected.
 
-### Step 3 — Read the endpoint URL from the card itself
-
-No hardcoded URL mappings. The URL comes directly from the card:
-
+**Step 3 — Get endpoint from card**
 ```python
-# clientAgent/discovery.py
 def card_url(card) -> str:
-    return card.supported_interfaces[0].url   # e.g. "http://localhost:8001"
+    return card.url   # e.g. "http://localhost:8001"
 ```
 
-### Full discover-and-match function
-
-```python
-# clientAgent/discovery.py
-async def discover_and_match(query, http_client):
-    for base_url in REMOTE_AGENT_URLS:
-        resolver = A2ACardResolver(httpx_client=http_client, base_url=base_url)
-        card = await resolver.get_agent_card()   # A2A Well-Known URI discovery
-        skill = match_skill(query, card)          # tag-based skill matching
-        if skill:
-            return skill, card, base_url          # card carries the endpoint URL
-    return None, None, None
-```
+No hardcoded URL mappings — the card is the source of truth.
 
 ---
 
-## 7. How a User Request is Served — End to End
+## 8. How a User Request is Served — End to End
 
-**Example: user types `"weather in Bangalore"`**
+**Example: `"Should I buy AAPL?"`**
 
 ```
-User types: "weather in Bangalore"
+User types: "Should I buy AAPL?"
       │
-      ▼
-clientAgent/runner.py — run_agent()
+      ▼  clientAgent/runner.py
+      │  discover_and_match() → tag "aapl" matches Stock Agent
+      │  ClientFactory(config).create(card) → builds JSON-RPC client
+      │  client.send_message(message) → POST http://localhost:8002/
       │
-      │  discover_and_match("weather in Bangalore")
-      │    ├─ A2ACardResolver.get_agent_card("http://localhost:8001")
-      │    │    → AgentCard { name: "Weather Agent", skills: [weather_lookup] }
-      │    │    → match_skill() checks tags: "weather" ✓ found
-      │    └─ returns (weather_lookup skill, WeatherAgent card, "http://localhost:8001")
+      ▼  remoteAgents/stock/server.py
+      │  A2AFastAPIApplication → DefaultRequestHandler → StockAgentExecutor.execute()
       │
-      │  create_client(agent=card, client_config=ClientConfig(streaming=False))
-      │  new_text_message("weather in Bangalore", role=ROLE_USER)
-      │  client.send_message(SendMessageRequest(message=...))
-      │  POST http://localhost:8001/
+      ▼  remoteAgents/stock/agent_executor.py  (LangChain bridge)
+      │  update_status(working)
+      │  _llm_with_tools.ainvoke("Should I buy AAPL?")
+      │    → tool_calls: [get_stock("AAPL")]
+      │  get_stock.invoke({"symbol": "AAPL"})
+      │    → "AAPL: $189.30 ▲1.20 (+0.64%) | bullish | Strong iPhone demand..."
+      │  _llm.ainvoke("Format as 3-line analysis: ...")
+      │    → "AAPL is at $189.30, up $1.20 today.\nBullish — strong iPhone demand.\nGood Buy."
+      │  add_artifact(result_text)
+      │  update_status(completed)
       │
-      ▼
-remoteAgents/weather/server.py
-      │  DefaultRequestHandler receives the request
-      │  Routes to WeatherAgentExecutor.execute()
+      ▼  clientAgent/runner.py
+      │  _extract_text_from_event() reads text from Task artifact
       │
-      ▼
-remoteAgents/weather/agent_executor.py — execute()
-      │
-      │  Step 1: new_task_from_user_message(context.message)
-      │          event_queue.enqueue_event(task)
-      │
-      │  Step 2: task_updater.update_status(TASK_STATE_WORKING)
-      │          "Looking up weather data..."
-      │
-      │  Step 3: get_message_text(context.message) → "weather in Bangalore"
-      │          _extract_city() → "Bangalore"
-      │          get_weather("Bangalore") → { temp:"26°C", condition:"Cloudy", ... }
-      │
-      │  Step 4: _format_with_llm(query, weather_data)
-      │          → "The weather in Bangalore is 26°C and Cloudy with 72% humidity."
-      │          task_updater.add_artifact(parts=[new_text_part(text=formatted)])
-      │
-      │  Step 5: task_updater.update_status(TASK_STATE_COMPLETED)
-      │
-      ▼
-runner.py — get_stream_response_text(response)
-      │  Extracts text from the artifact in the StreamResponse
-      │
-      ▼
-User sees: "The weather in Bangalore is 26°C and Cloudy with 72% humidity."
+      ▼  User sees: "AAPL is at $189.30, up $1.20 today. ..."
 ```
 
-**The same flow applies to stock queries** — except the client picks the Stock Agent (port 8002) because the query contains a stock-related tag like `"aapl"` or `"stock"`.
+The weather flow is identical except ADK handles the tool call internally — no manual bridge code.
 
 ---
 
-## 8. Project Structure
+## 9. Project Structure
 
 ```
 a2aDemo/
@@ -364,98 +583,72 @@ a2aDemo/
 ├── client_demo.py       ← CLI client: discovery → match → send → print
 ├── ui.py                ← Streamlit chat UI with live A2A trace panel
 │
-├── clientAgent/         ← Client-side A2A logic (pure SDK usage)
-│   ├── discovery.py     ← A2ACardResolver + match_skill() + discover_and_match()
-│   ├── runner.py        ← create_client() + send_message() + response extraction
+├── clientAgent/
+│   ├── discovery.py     ← A2ACardResolver + match_skill + discover_and_match
+│   ├── runner.py        ← ClientFactory + send_message + text extraction
 │   └── tracer.py        ← Same as runner but yields live trace steps for the UI
 │
-└── remoteAgents/        ← Independent A2A agent servers
-    ├── weather/
-    │   ├── server.py          ← AgentCard + DefaultRequestHandler + FastAPI routes
-    │   ├── agent_executor.py  ← AgentExecutor: 5-step SDK task lifecycle
-    │   └── weather_tool.py    ← Mock weather data (returns temp, humidity, wind)
-    └── stock/
-        ├── server.py          ← AgentCard + DefaultRequestHandler + FastAPI routes
-        ├── agent_executor.py  ← AgentExecutor: 5-step SDK task lifecycle
-        └── stock_tool.py      ← Mock stock data (returns price, sentiment)
+└── remoteAgents/
+    ├── weather/                  ← Google ADK agent
+    │   ├── agent.py              ← ADK Agent(model=LiteLlm(...), tools=[get_weather])
+    │   ├── server.py             ← to_a2a(root_agent, agent_card=...) → Starlette app
+    │   └── weather_tool.py       ← get_weather() mock data
+    └── stock/                    ← LangChain agent
+        ├── agent_executor.py     ← @tool + ChatOpenAI + A2A AgentExecutor bridge
+        ├── server.py             ← A2AFastAPIApplication + DefaultRequestHandler
+        └── stock_tool.py         ← get_stock() mock data
 ```
 
 ---
 
-## 9. Sample Requests and Responses
+## 10. Sample Requests and Responses
 
-For manual testing via Postman or curl. Send to `POST /` on the agent's port.
+Send to `POST /` via Postman or curl.
 
 ### Weather — port 8001
 
-**Request:**
 ```json
 {
   "jsonrpc": "2.0",
-  "id": "req-1",
-  "method": "SendMessage",
+  "id": "1",
+  "method": "message/send",
   "params": {
     "message": {
-      "role": "ROLE_USER",
+      "role": "user",
       "messageId": "abc123",
-      "contextId": "ctx456",
       "parts": [{ "text": "What is the weather in Bangalore?" }]
     }
   }
 }
 ```
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-1",
-  "result": {
-    "task": {
-      "status": { "state": "TASK_STATE_COMPLETED" },
-      "artifacts": [
-        { "name": "weather_result",
-          "parts": [{ "text": "The weather in Bangalore is 26°C and Cloudy with 72% humidity and winds of 12 km/h." }] }
-      ]
-    }
-  }
-}
+Response artifact text:
+```
+The weather in Bangalore is currently 26°C and Cloudy with 72% humidity and winds of 12 km/h.
 ```
 
 ### Stock — port 8002
 
-**Request:**
 ```json
 {
   "jsonrpc": "2.0",
-  "id": "req-2",
-  "method": "SendMessage",
+  "id": "2",
+  "method": "message/send",
   "params": {
     "message": {
-      "role": "ROLE_USER",
-      "messageId": "def789",
-      "contextId": "ctx012",
+      "role": "user",
+      "messageId": "def456",
       "parts": [{ "text": "Should I buy AAPL?" }]
     }
   }
 }
 ```
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": "req-2",
-  "result": {
-    "task": {
-      "status": { "state": "TASK_STATE_COMPLETED" },
-      "artifacts": [
-        { "name": "stock_result",
-          "parts": [{ "text": "AAPL is at $189.30, up $1.20 today.\nBullish — strong iPhone demand and services growth.\nGood Buy — consistent growth with solid fundamentals." }] }
-      ]
-    }
-  }
-}
+Response artifact text:
+```
+AAPL is at $189.30, up $1.20 (0.64%) today.
+Bullish — strong iPhone demand and services growth driving consistent revenue.
+Good Buy — solid fundamentals and long-term growth trajectory support investment.
 ```
 
 ### Available cities
@@ -466,20 +659,20 @@ For manual testing via Postman or curl. Send to `POST /` on the agent's port.
 
 ---
 
-## 10. Endpoints Reference
+## 11. Endpoints Reference
 
-### Weather Agent — port 8001
+### Weather Agent — port 8001 (Google ADK)
 
-| Method | URL | What it does |
+| Method | URL | Description |
 |---|---|---|
-| GET | `/.well-known/agent-card.json` | A2A discovery — returns AgentCard with weather skills |
-| POST | `/` | A2A JSON-RPC — accepts SendMessage, returns task with artifact |
-| GET | `/docs` | Swagger UI for manual testing |
+| GET | `/.well-known/agent-card.json` | A2A discovery — AgentCard with weather skills |
+| POST | `/` | A2A JSON-RPC — `message/send` → returns task with artifact |
+| GET | `/docs` | Swagger UI |
 
-### Stock Agent — port 8002
+### Stock Agent — port 8002 (LangChain)
 
-| Method | URL | What it does |
+| Method | URL | Description |
 |---|---|---|
-| GET | `/.well-known/agent-card.json` | A2A discovery — returns AgentCard with stock skills |
-| POST | `/` | A2A JSON-RPC — accepts SendMessage, returns task with artifact |
-| GET | `/docs` | Swagger UI for manual testing |
+| GET | `/.well-known/agent-card.json` | A2A discovery — AgentCard with stock skills |
+| POST | `/` | A2A JSON-RPC — `message/send` → returns task with artifact |
+| GET | `/docs` | Swagger UI |

@@ -9,8 +9,8 @@ Run:
 """
 import asyncio
 import streamlit as st
-from clientAgent.tracer import run_agent_with_trace  # noqa: E402
-from clientAgent.runner import run_agent  # noqa: E402
+from clientAgent.tracer import run_agent_with_trace  
+from clientAgent.runner import run_agent
 
 
 # ── Page config ───────────────────────────────────────────────────────────────

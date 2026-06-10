@@ -1,123 +1,104 @@
 """
-StockAgentExecutor — A2A SDK AgentExecutor for the Stock agent.
+StockAgentExecutor — LangChain agent wrapped in the A2A protocol.
 
-Follows the official A2A SDK pattern (from the docs):
-  1. Create or retrieve task, enqueue it
-  2. Update status → WORKING
-  3. Execute business logic (tool call + LLM format)
-  4. Add result as an artifact
-  5. Update status → COMPLETED
+Uses ChatOpenAI via LiteLLM proxy (same model as the Weather ADK agent)
+so both agents use a consistent LLM backend.
 """
 import os
-
 from dotenv import load_dotenv
-from litellm import acompletion
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
 
 from a2a.server.agent_execution.agent_executor import AgentExecutor
 from a2a.server.agent_execution.context import RequestContext
 from a2a.server.events.event_queue import EventQueue
 from a2a.server.tasks.task_updater import TaskUpdater
-from a2a.types import TaskState
-from a2a.helpers import (
-    get_message_text,
-    new_task_from_user_message,
-    new_text_message,
-    new_text_part,
-)
+from a2a.types import Part, TaskState, TextPart
+from a2a.utils import get_message_text, new_task
+from a2a.utils.message import new_agent_text_message
 
-from remoteAgents.stock.stock_tool import get_stock
+from remoteAgents.stock.stock_tool import get_stock as _get_stock_data
 
 load_dotenv()
 
 
+# ── LangChain tool ────────────────────────────────────────────────────────────
+
+@tool
+def get_stock(symbol: str) -> str:
+    """
+    Returns stock price, change, sentiment and note for a ticker.
+    Supported: AAPL, TSLA, GOOGL, MSFT, AMZN, NVDA, META, NFLX, RELIANCE, TCS, INFY.
+    """
+    d = _get_stock_data(symbol)
+    if d.get("status") == "not_found":
+        return d["message"]
+    return (
+        f"{d['symbol']}: ${d['price']} {d['direction']}{abs(d['change'])} "
+        f"({d['change_pct']:+.2f}%) | {d['sentiment']} | {d['note']}"
+    )
+
+
+# ── LangChain model — same backend as the Weather ADK agent ──────────────────
+
+_llm_with_tools = ChatOpenAI(
+    model="gpt-3.5-turbo",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    temperature=0.2,
+).bind_tools([get_stock])
+
+# Plain LLM without tools — used for the final formatting step
+_llm = ChatOpenAI(
+    model="gpt-3.5-turbo",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    temperature=0.2,
+)
+
+
+# ── A2A bridge ────────────────────────────────────────────────────────────────
+
 class StockAgentExecutor(AgentExecutor):
-    """Handles stock queries following the official A2A executor pattern."""
+    """Thin A2A wrapper around the LangChain + GPT-3.5 stock agent."""
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        # Step 1: Create or retrieve task and enqueue it
-        if context.current_task:
-            task = context.current_task
-        else:
-            task = new_task_from_user_message(context.message)
+        task = context.current_task or new_task(context.message)
+        if not context.current_task:
             await event_queue.enqueue_event(task)
 
-        task_updater = TaskUpdater(
-            event_queue=event_queue,
-            task_id=task.id,
-            context_id=task.context_id,
-        )
+        updater = TaskUpdater(event_queue=event_queue, task_id=task.id, context_id=task.context_id)
+        await updater.update_status(TaskState.working, new_agent_text_message("Fetching stock data..."))
 
-        # Step 2: Signal working
-        await task_updater.update_status(
-            state=TaskState.TASK_STATE_WORKING,
-            message=new_text_message("Looking up stock data..."),
-        )
+        user_text = get_message_text(context.message) if context.message else ""
 
-        # Step 3: Extract ticker and call the stock tool
-        user_text = get_message_text(context.message) or ""
-        symbol = self._extract_symbol(user_text)
-        stock_data = get_stock(symbol)
+        try:
+            # Step 1 — ask the model which tool to call
+            response = await _llm_with_tools.ainvoke([HumanMessage(content=user_text)])
 
-        # Step 4: Format with LLM and add as artifact
-        formatted = await self._format_with_llm(user_text, stock_data)
-        await task_updater.add_artifact(
-            parts=[new_text_part(text=formatted, media_type="text/plain")],
-            name="stock_result",
-        )
+            # Step 2 — if the model requested a tool, call it; then format with plain LLM
+            if response.tool_calls:
+                tool_result = get_stock.invoke(response.tool_calls[0]["args"])
 
-        # Step 5: Mark completed
-        await task_updater.update_status(
-            state=TaskState.TASK_STATE_COMPLETED,
-            message=new_text_message("Stock analysis complete."),
-        )
+                final = await _llm.ainvoke([
+                    HumanMessage(content=(
+                        f"User asked: {user_text}\n\n"
+                        f"Stock data: {tool_result}\n\n"
+                        "Respond in exactly 3 lines:\n"
+                        "Line 1: Current price and today's change.\n"
+                        "Line 2: Sentiment (Bullish/Bearish/Neutral) with one reason.\n"
+                        "Line 3: Verdict — Good Buy, Hold, or Avoid — with one short reason."
+                    ))
+                ])
+                result_text = final.content or tool_result  # fallback to raw data if LLM returns empty
+            else:
+                result_text = response.content or "No analysis available."
+        except Exception as e:
+            result_text = f"Stock analysis failed: {e}"
+
+        await updater.add_artifact(parts=[Part(root=TextPart(text=result_text))], name="stock_result")
+        await updater.update_status(TaskState.completed, new_agent_text_message("Done."))
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        task_updater = TaskUpdater(
-            event_queue=event_queue,
-            task_id=context.task_id,
-            context_id=context.context_id,
-        )
-        await task_updater.cancel()
-
-    # ── Private helpers ───────────────────────────────────────────────────────
-
-    def _extract_symbol(self, text: str) -> str:
-        """Best-effort ticker extraction. Falls back to AAPL."""
-        known_symbols = ["AAPL", "TSLA", "GOOGL", "MSFT", "AMZN", "NVDA", "META", "NFLX", "RELIANCE", "TCS", "INFY"]
-        upper = text.upper()
-        for sym in known_symbols:
-            if sym in upper:
-                return sym
-        words = text.split()
-        for word in reversed(words):
-            cleaned = word.strip("?.,!").upper()
-            if cleaned.isalpha() and len(cleaned) >= 2:
-                return cleaned
-        return "AAPL"
-
-    async def _format_with_llm(self, query: str, stock_data: dict) -> str:
-        """Formats raw stock data into a 3-line analysis via LLM."""
-        if stock_data.get("status") == "not_found":
-            return stock_data.get("message", "Stock data not available.")
-
-        response = await acompletion(
-            model="openai/gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a concise stock analyst. "
-                        "Always respond in exactly 3 lines:\n"
-                        "Line 1: Current price and today's change.\n"
-                        "Line 2: Sentiment (Bullish / Bearish / Neutral) with one reason.\n"
-                        "Line 3: Simple verdict — Good Buy, Hold, or Avoid — with one short reason."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"User asked: '{query}'\n\nStock data: {stock_data}\n\nFormat as a 3-line stock analysis.",
-                },
-            ],
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
-        return response.choices[0].message.content.strip()
+        updater = TaskUpdater(event_queue=event_queue, task_id=context.task_id, context_id=context.context_id)
+        await updater.cancel()

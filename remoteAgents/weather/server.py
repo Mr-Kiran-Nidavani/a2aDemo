@@ -1,35 +1,25 @@
 """
 Weather Agent A2A Server — port 8001
 
-Exposes WeatherAgentExecutor as a proper A2A SDK server.
-Clients discover capabilities via GET /.well-known/agent-card.json
-and send tasks via the JSON-RPC endpoint.
-"""
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+Uses Google ADK's to_a2a() to expose the ADK LlmAgent as an A2A-compliant
+server. A custom AgentCard is provided so that the skill tags match exactly
+what the client's discovery.py expects for routing.
 
-from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
-from a2a.server.events.in_memory_queue_manager import InMemoryQueueManager
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import (
-    create_agent_card_routes,
-    create_jsonrpc_routes,
-    add_a2a_routes_to_fastapi,
-)
+Clients discover capabilities via GET /.well-known/agent-card.json
+and send tasks via the JSON-RPC endpoint at POST /.
+"""
+from google.adk.a2a.utils.agent_to_a2a import to_a2a
 from a2a.types import (
     AgentCard,
     AgentSkill,
     AgentCapabilities,
-    AgentInterface,
 )
 
-from remoteAgents.weather.agent_executor import WeatherAgentExecutor
-
+from remoteAgents.weather.agent import root_agent
 
 # ── Agent Card ────────────────────────────────────────────────────────────────
-# Each remote agent declares its identity and skills here.
-# This is the A2A "registration" — served at /.well-known/agent-card.json
-# so any client can discover what this agent can do.
+# Providing a custom card so skill tags are preserved for client-side routing.
+# to_a2a() serves this at GET /.well-known/agent-card.json automatically.
 
 agent_card = AgentCard(
     name="Weather Agent",
@@ -39,15 +29,11 @@ agent_card = AgentCard(
         "Bangalore, Mumbai, Delhi, Chennai, Hyderabad, Kolkata, or Pune."
     ),
     version="1.0.0",
+    url="http://localhost:8001",
+    preferred_transport="JSONRPC",
     capabilities=AgentCapabilities(streaming=False),
     default_input_modes=["text/plain"],
     default_output_modes=["text/plain"],
-    supported_interfaces=[
-        AgentInterface(
-            url="http://localhost:8001",
-            protocol_binding="JSONRPC",
-        )
-    ],
     skills=[
         AgentSkill(
             id="weather_lookup",
@@ -69,29 +55,12 @@ agent_card = AgentCard(
     ],
 )
 
-# ── A2A Handler & Routes ──────────────────────────────────────────────────────
-# DefaultRequestHandler wires the AgentExecutor into the A2A request lifecycle.
-# It handles task creation, status updates, and event routing.
+# ── A2A App ───────────────────────────────────────────────────────────────────
+# to_a2a() wires up:
+#   - A2aAgentExecutor  (bridges A2A protocol ↔ ADK runner)
+#   - InMemoryTaskStore + InMemoryPushNotificationConfigStore
+#   - DefaultRequestHandler
+#   - Starlette app with all A2A routes mounted
+#   - /.well-known/agent-card.json served from our custom card
 
-handler = DefaultRequestHandler(
-    agent_executor=WeatherAgentExecutor(),
-    task_store=InMemoryTaskStore(),
-    agent_card=agent_card,
-)
-
-# create_agent_card_routes → exposes GET /.well-known/agent-card.json
-# create_jsonrpc_routes    → exposes POST / for A2A JSON-RPC calls
-agent_card_routes = create_agent_card_routes(agent_card)
-jsonrpc_routes = create_jsonrpc_routes(handler, rpc_url="/")
-
-# ── FastAPI App ───────────────────────────────────────────────────────────────
-
-app = FastAPI(
-    title="Weather Agent (A2A)",
-    description="A2A-compliant weather agent on port 8001",
-    version="1.0.0",
-)
-
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-add_a2a_routes_to_fastapi(app, agent_card_routes=agent_card_routes, jsonrpc_routes=jsonrpc_routes)
+app = to_a2a(root_agent, port=8001, agent_card=agent_card)

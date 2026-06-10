@@ -1,33 +1,28 @@
 """
 Stock Agent A2A Server — port 8002
 
-Exposes StockAgentExecutor as a proper A2A SDK server.
+Exposes StockAgentExecutor as an A2A-compliant server using the new
+A2AFastAPIApplication API (a2a-sdk >= 1.1).
+
 Clients discover capabilities via GET /.well-known/agent-card.json
-and send tasks via the JSON-RPC endpoint.
+and send tasks via the JSON-RPC endpoint at POST /.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from a2a.server.apps import A2AFastAPIApplication
 from a2a.server.tasks.inmemory_task_store import InMemoryTaskStore
 from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import (
-    create_agent_card_routes,
-    create_jsonrpc_routes,
-    add_a2a_routes_to_fastapi,
-)
 from a2a.types import (
     AgentCard,
     AgentSkill,
     AgentCapabilities,
-    AgentInterface,
 )
 
 from remoteAgents.stock.agent_executor import StockAgentExecutor
 
 
 # ── Agent Card ────────────────────────────────────────────────────────────────
-# Served at /.well-known/agent-card.json — this is how clients discover
-# what this agent can do (A2A Well-Known URI discovery).
 
 agent_card = AgentCard(
     name="Stock Agent",
@@ -37,15 +32,11 @@ agent_card = AgentCard(
         "RELIANCE, TCS, and INFY."
     ),
     version="1.0.0",
+    url="http://localhost:8002",
+    preferred_transport="JSONRPC",
     capabilities=AgentCapabilities(streaming=False),
     default_input_modes=["text/plain"],
     default_output_modes=["text/plain"],
-    supported_interfaces=[
-        AgentInterface(
-            url="http://localhost:8002",
-            protocol_binding="JSONRPC",
-        )
-    ],
     skills=[
         AgentSkill(
             id="stock_analysis",
@@ -67,16 +58,12 @@ agent_card = AgentCard(
     ],
 )
 
-# ── A2A Handler & Routes ──────────────────────────────────────────────────────
+# ── A2A Handler ───────────────────────────────────────────────────────────────
 
 handler = DefaultRequestHandler(
     agent_executor=StockAgentExecutor(),
     task_store=InMemoryTaskStore(),
-    agent_card=agent_card,
 )
-
-agent_card_routes = create_agent_card_routes(agent_card)
-jsonrpc_routes = create_jsonrpc_routes(handler, rpc_url="/")
 
 # ── FastAPI App ───────────────────────────────────────────────────────────────
 
@@ -88,4 +75,5 @@ app = FastAPI(
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-add_a2a_routes_to_fastapi(app, agent_card_routes=agent_card_routes, jsonrpc_routes=jsonrpc_routes)
+# Mount A2A routes: POST / (JSON-RPC) + GET /.well-known/agent-card.json
+A2AFastAPIApplication(agent_card=agent_card, http_handler=handler).add_routes_to_app(app)

@@ -16,11 +16,10 @@ from uuid import uuid4
 
 import httpx
 
-from a2a.client import A2ACardResolver
-from a2a.helpers import get_stream_response_text
+from a2a.types import Message, Task, TaskArtifactUpdateEvent, TaskStatusUpdateEvent
+from a2a.utils.parts import get_text_parts
 
 from clientAgent.discovery import (
-    REMOTE_AGENT_URLS,
     card_name,
     card_url,
     discover_all_cards,
@@ -28,7 +27,7 @@ from clientAgent.discovery import (
     skill_id,
     skill_name,
 )
-from clientAgent.runner import run_agent_iter
+from clientAgent.runner import _extract_text_from_event, run_agent_iter
 
 
 def _trace(step: int, icon: str, label: str, detail: str) -> dict:
@@ -111,32 +110,34 @@ async def run_agent_with_trace(user_message: str):
         detail=json.dumps({
             "jsonrpc": "2.0",
             "id": req_id,
-            "method": "SendMessage",
+            "method": "message/send",
             "params": {
-                "message": {"role": "ROLE_USER", "parts": [{"text": user_message}]}
+                "message": {"role": "user", "parts": [{"text": user_message}]}
             },
         }, indent=2),
     )
     step += 1
 
-    # ── Step 5: Collect StreamResponse events ─────────────────────────────────
-    async for response in run_agent_iter(user_message):
-        # Check for WORKING state to show live processing step
+    # ── Step 5: Collect events ────────────────────────────────────────────────
+    async for event in run_agent_iter(user_message):
+        # Check for WORKING status update to show live processing step
         try:
-            if hasattr(response, "status_update") and response.status_update:
-                state = str(response.status_update.status.state)
-                if "WORKING" in state.upper():
-                    yield _trace(
-                        step=step, icon="🔧",
-                        label="Remote agent processing",
-                        detail=f"Task state: {state}\nCalling tool + formatting response with LLM...",
-                    )
-                    step += 1
+            if isinstance(event, tuple):
+                _, update = event
+                if isinstance(update, TaskStatusUpdateEvent):
+                    state = str(update.status.state)
+                    if "working" in state.lower():
+                        yield _trace(
+                            step=step, icon="🔧",
+                            label="Remote agent processing",
+                            detail=f"Task state: {state}\nCalling tool + formatting response with LLM...",
+                        )
+                        step += 1
         except Exception:
             pass
 
-        # Collect final text
-        text = get_stream_response_text(response)
+        # Collect final text from the event
+        text = _extract_text_from_event(event)
         if text:
             final_response = text
 
@@ -148,7 +149,7 @@ async def run_agent_with_trace(user_message: str):
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "status": "TASK_STATE_COMPLETED",
+                "status": "completed",
                 "artifacts": [{"parts": [{"text": final_response}]}]
             },
         }, indent=2),
